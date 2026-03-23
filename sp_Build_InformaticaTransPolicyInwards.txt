@@ -1,0 +1,2215 @@
+USE [staging_genius]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_Build_InformaticaTransPolicyInwards]    Script Date: 3/23/2026 3:19:21 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER OFF
+GO
+
+ALTER   PROCEDURE [dbo].[sp_Build_InformaticaTransPolicyInwards]  WITH RECOMPILE AS
+
+
+SET NOCOUNT ON
+/************************************************************************************************************************/
+/*** 				Populate the staging InformaticaTranspolicyinwards Table	*/	
+/***	Developer: 		Tayo Onolaja		              				*/
+/***	Created: 		15/04/07					             	*/
+/***	This created has been created from procedure sp_Build_Tfr_Transpolicyinwards, this amendeded */
+/***    version will polpulate table InformaticaTranspolicyinwards which is used for   */
+/***    incremental Genius phase 6 mappings                                                     */
+/***    History has been kept to allow users to know what procedure is doing                    */
+/***												*/
+/***	Modification History									*/
+/***	Date: 11th May 2004									*/
+/***	Author: Michael Dunne									*/
+/***	Release: ODS2 Release 1.02								*/
+/***	Description:										*/
+/***	Remove PolicyDetails fields from the table as these are not wanted and should be obtained	*/
+/***	from the linked PolicyDetails table.							*/
+/***												*/
+/***	Date: 29th June 2004									*/
+/***	Author: Michael Dunne									*/
+/***	Release: ODS2 Release 1.03								*/
+/***	Description:										*/
+/***	Add Linked Mainline Group Code field to the output Fact Table so can link to Summary.	*/
+/***	Also removed Description fields as part of ODS3 migration project.				*/
+/***												*/
+/***	Date: 17th September 2004								*/
+/***	Author: Michael Dunne									*/
+/***	Release: ODS3 Release 1.02 / MIS Release 1.07						*/
+/***	Description:										*/
+/***	Add Endorsement Type Code & Total Corporate Amount fields.				*/
+/***												*/
+/***	Date: 29th October 2004									*/
+/***	Author: Michael Dunne									*/
+/***	Release: ODS3 Release 1.04								*/
+/***	Description:										*/
+/***	Populate Linked Mainline Group Code field from the Main Line if the	Linked MainLine is	*/
+/***	blank. This ensures we are able to use Linked MainLine as a drill path.			*/
+/***	Add General Ledger fields to TransPolicyInwards & Outwards & TransClaimStatsInwards & 	*/
+/***	Outwards. If there is a General Ledger record then use the dates ven if it is null.		*/
+/***	Also, if the Original, Accounting or Base currency is "USD" then use this for	the Corporate	*/
+/***	Currency and do not perform any currency conversion.					*/
+/***												*/
+/***	Date: 7th February 2005									*/
+/***	Author: Michael Dunne									*/
+/***	Release: ODS3 Release 1.07								*/
+/***	Description:										*/
+/***	Populate new annualised premium values - these were previously on InwardsPolicyDetails.	*/
+/***	Add ReportingPeriod as a DateTime so that we can use it to drill through from Cube to Query	*/
+/***	and use the reporting period as a filter.							*/
+/***	- This needs to be added to TransPolicyInwards & Outwards only for the moment.		*/
+/***												*/
+/***	Date: 2nd March 2005									*/
+/***	Author: Michael Dunne									*/
+/***	Release: ODS3 Release 1.08								*/
+/***	Description:										*/
+/***	Remove from the build all zero sum transactions as these are RI Stand-Alone commission	*/
+/***	records which then cause the link between Inwards & Outwards to duplicate.		*/
+/***	Amend "RIR" and "RIC" revenue codes to "BRK" to allow the join between Inwards and	*/
+/***	Outwards to work better. To do this we need to sum the Participant Share.			*/
+/***												*/
+/***	Date: 13th April 2005									*/
+/***	Author: Michael Dunne									*/
+/***	Release: ODS3 Release 1.10								*/
+/***	Description:										*/
+/***	Add Installment Number new field								*/
+/***	Also amend the population of the amount fields so that CPP, CPR and FRF are considered	*/
+/***	as commission, rather than other as currently.						*/
+/***	Amend Direct/Assumed flag derivation.							*/
+/***	Also correct an error on the calculation of the Ratio used to split Inwards/Outwards amounts	*/
+/***	to cater for SQL calculating amounts of zero as only very nearly zero.			*/
+/***												*/
+/***	Date: 16th August 2005									*/
+/***	Author: Michael Dunne									*/
+/***	Release: ODS3 Release 1.12								*/
+/***	Description:										*/
+/***	XLCAP 96747 -  Add zero amount Gross Brokerage records for those transactions which 	*/
+/***			have stand-alone Ri commission but an Inwards transaction.		*/
+/***	XLCAP 90533										*/
+/***	- Add Peoplesoft OBU Code (from new AS/400 Cross Reference Table).			*/
+/***												*/
+/***	Date: 9th August 2006									*/
+/***	Author: Michael Dunne									*/
+/***	Release: GENIUS Incremental Project - 1st Release (Pilot)					*/
+/***	Description:										*/
+/***	Use split down AllTransFullDetail tables (TransPolicyInwards & Outwards) in Staging now 	*/
+/***	that these have been created.								*/
+/***												*/	
+/***												*/					
+/***	This procedure will take data from various tables and populate the TransPolicyInwards 	*/
+/***	table. This table is built for the ODS Rewrite project and incorporates 			*/
+/***	Bermuda and Ireland specification requests.						*/
+/***												*/
+/***	This stored procedure populates an intermediate table in Staging database and then		*/
+/***	this table is transferred using DTS to the ODS2 database.					*/
+/***												*/
+/************************************************************************************************************************/
+
+/***	Michael Dunne. 14th March 2005.												***/
+/***	We need to ensure that all inwards and outwards commission records join. Hence combine Revenue Codes RIR and RIC into BRK.	***/
+
+
+--TO. Removed updates to staging table. 12/02/08. Dont want to do this bit, will leave this to the ODS build weekly.
+
+
+/********************************************************************************************/
+/***	End of changes for Pilot Phase of GENIUS Incremental Project	***/
+/********************************************************************************************/
+
+/* Create 2 tables to hold current and earliest Rate of Exchanges per Company into Corporate Base (USD). */
+
+/* 1. Current Rate of Exchange */
+SELECT 
+	FKCompany,
+	ExchangeRate
+INTO
+	#InfCurrentRoe
+
+FROM
+
+	HistoricalRoe 
+
+WHERE
+	FKRateGroup = '*CURRENT'	AND
+	FKCcy = 'USD'
+
+/* 2. Earliest Rate of Exchange */
+SELECT
+	FKCompany,
+	ExchangeRate
+INTO
+	#InfEarliestRoe
+
+
+FROM
+
+	HistoricalRoe
+
+WHERE
+	FKRateGroup LIKE 'X199901%' AND
+	FKCcy = 'USD'
+
+/* 3. Specific Period Rate of Exchange */
+SELECT 
+
+	FKCompany,
+	ExchangeRate,
+	RateGroup=LEFT(FKRateGroup,7)
+INTO
+	#InfRptPeriodDateRoe
+
+FROM
+
+	HistoricalRoe
+
+WHERE
+	FKRateGroup LIKE 'X%' AND
+	FKCcy='USD'
+
+CREATE UNIQUE CLUSTERED INDEX IX_#InfRptPeriodDateRoe_Key ON #InfRptPeriodDateRoe (FKCompany,RateGroup)
+
+
+/***	Michael Dunne. 11th May 2004. Remove Lead Cedent Temporary Tables	***/
+
+
+/*** 4. Ri Amounts split by Ri Policy Number so can apply this ratio to the Inwards Transaction Amts 	***/
+/***	Michael Dunne. 9th August 2006.
+	As part of the GENIUS Incremental Project split AllTransFullDetail into Gross/Ri & 
+	Claims/Non-Claims
+	- Hence for this build amend AllTransFullDetail to TransPolicyOutwards and remove the filter	***/
+
+SELECT
+
+	TransPolicyOutwards.FKGenIntStatsHeader,
+	TransPolicyOutwards.FKGenIntStatsSec,
+        TransPolicyOutwards.FKGenIntStatsAmt,
+	TransPolicyOutwards.FKRevenueCode,
+	SUM(TransPolicyOutwards.OrigCcyAmt)				AS	SumOrigCcyAmt,
+	SUM(TransPolicyOutwards.AcctingCcyAmt)			        AS	SumAcctingCcyAmt,
+	SUM(TransPolicyOutwards.BaseCcyAmtRoeDateBooked)		AS	SumBaseCcyAmtRoeDateBooked,
+	TransPolicyOutwards.PFKRiPolNbr,
+	TransPolicyOutwards.FKGenRiIntPolNbr,
+	TransPolicyOutwards.FKGenRiIntPolSeq,
+	TransPolicyOutwards.FKGenRiIntSecSeq,
+	TransPolicyOutwards.FKGenIntStatsPostingKey,
+	TransPolicyOutwards.R_TR_AMT_PAR
+
+
+
+
+
+INTO	#InfRi
+
+FROM	TransPolicyOutwards
+
+/***	Michael Dunne. 9th August 2006. Filter no longer required as only Ri non-Claim records 
+	in TransPolicyOutwards
+WHERE
+	(AllTransFullDetail.PFKRiPolNbr <> '' AND AllTransFullDetail.PFKRiPolNbr IS NOT NULL)		AND
+	AllTransFullDetail.TransColumnNbr <> 5	AND
+	AllTransFullDetail.PFKClmNbr = ''
+***/
+
+
+GROUP BY
+	TransPolicyOutwards.FKGenIntStatsHeader,
+	TransPolicyOutwards.FKGenIntStatsSec,
+        TransPolicyOutwards.FKGenIntStatsAmt,
+	TransPolicyOutwards.FKRevenueCode,
+	TransPolicyOutwards.PFKRiPolNbr,
+	TransPolicyOutwards.FKGenRiIntPolNbr,
+	TransPolicyOutwards.FKGenRiIntPolSeq,
+	TransPolicyOutwards.FKGenRiIntSecSeq,
+	TransPolicyOutwards.FKGenIntStatsPostingKey,
+	TransPolicyOutwards.R_TR_AMT_PAR
+
+/***	Michael Dunne.	2nd March 2005. Drop stand-alone records (Commission hopefully) which sum to zero in Base Currency	***/
+/**	- This is to allow joining of Inwards and Outwards correctly.									***/
+HAVING 
+	SUM(TransPolicyOutwards.BaseCcyAmtRoeDateBooked) <= -0.001	OR
+	SUM(TransPolicyOutwards.BaseCcyAmtRoeDateBooked) >=  0.001
+
+CREATE INDEX #InfRi_PrimaryKey ON #InfRi ([FKGenIntStatsHeader], [FKGenIntStatsSec], [FKRevenueCode])
+
+/*** Total Ri Amounts by Stats Header/Section/Revenue Code 	***/
+/***	Michael Dunne. 9th August 2006.
+	As part of the GENIUS Incremental Project split AllTransFullDetail into Gross/Ri & 
+	Claims/Non-Claims
+	- Hence for this build amend AllTransFullDetail to TransPolicyOutwards and remove the filter	***/
+SELECT
+
+	TransPolicyOutwards.FKGenIntStatsHeader,
+	TransPolicyOutwards.FKGenIntStatsSec,
+        TransPolicyOutwards.FKGenIntStatsAmt,
+	TransPolicyOutwards.FKRevenueCode,
+	SUM(TransPolicyOutwards.BaseCcyAmtRoeDateBooked)	AS	SumBaseCcyAmtRoeDateBooked
+
+
+INTO	#InfRi_Total_Initial
+
+FROM	TransPolicyOutwards
+
+/***	Michael Dunne. 9th August 2006. Filter no longer required as only Ri non-Claim records 
+	in TransPolicyOutwards
+WHERE
+	(AllTransFullDetail.PFKRiPolNbr <> '' AND AllTransFullDetail.PFKRiPolNbr IS NOT NULL)		AND
+	AllTransFullDetail.TransColumnNbr <> 5 AND
+	AllTransFullDetail.PFKClmNbr = ''
+***/
+
+GROUP BY
+	TransPolicyOutwards.FKGenIntStatsHeader,
+	TransPolicyOutwards.FKGenIntStatsSec,
+        TransPolicyOutwards.FKGenIntStatsAmt,
+	TransPolicyOutwards.FKRevenueCode
+
+CREATE INDEX #InfRi_Total_Initial_PrimaryKey ON #InfRi_Total_Initial ([FKGenIntStatsHeader], [FKGenIntStatsSec], [FKRevenueCode])
+
+
+/* Number of Unique Ri Policies attached at Header, Section and  Revenue Code.		*/
+
+/* This is required in order to calculate a correct ratio in those cases where there are 		*/
+/* multiple Ri Policies attached.								*/
+
+SELECT
+
+	#InfRi.FKGenIntStatsHeader,
+	#InfRi.FKGenIntStatsSec,
+        #InfRi.FKGenIntStatsAmt,
+	#InfRi.FKRevenueCode,
+	CAST(COUNT(DISTINCT #InfRi.PFKRiPolNbr) AS INTEGER)		AS	NbrRiPolicies
+
+INTO	#InfRi_Total
+
+FROM	#InfRi
+
+GROUP BY 
+
+	#InfRi.FKGenIntStatsHeader,
+	#InfRi.FKGenIntStatsSec,
+        #InfRi.FKGenIntStatsAmt,
+	#InfRi.FKRevenueCode
+
+CREATE INDEX #InfRi_Total_PrimaryKey ON #InfRi_Total ([FKGenIntStatsHeader], [FKGenIntStatsSec], [FKRevenueCode])
+
+/* Ri Percentage for each record */
+SELECT
+	#InfRi.FKGenIntStatsHeader,
+	#InfRi.FKGenIntStatsSec,
+        #InfRi.FKGenIntStatsAmt,
+	#InfRi.FKRevenueCode,
+	#InfRi.FKGenIntStatsPostingKey,
+	#InfRi.R_TR_AMT_PAR,
+	#InfRi.PFKRiPolNbr,
+	#InfRi.FKGenRiIntPolNbr,
+	#InfRi.FKGenRiIntPolSeq,
+	#InfRi.FKGenRiIntSecSeq,
+
+	CASE
+		WHEN	(#InfRi_Total_Initial.SumBaseCcyAmtRoeDateBooked IS NULL) 	THEN 1
+
+	/***	Michael Dunne. 18th April 2005. SQL can calculate zero as only being very nearly zero and hence we cannot check precisely zero here.	***/
+	/***
+		WHEN	(#InfRi_Total_Initial.SumBaseCcyAmtRoeDateBooked = 0.0) 		THEN (1.00/#InfRi_Total.NbrRiPolicies)
+	***/
+		WHEN	((#InfRi_Total_Initial.SumBaseCcyAmtRoeDateBooked <=  0.0001)  	AND
+			 (#InfRi_Total_Initial.SumBaseCcyAmtRoeDateBooked >= -0.0001))		
+
+			THEN (1.00/#InfRi_Total.NbrRiPolicies)
+
+		ELSE	(#InfRi.SumBaseCcyAmtRoeDateBooked / #InfRi_Total_Initial.SumBaseCcyAmtRoeDateBooked)
+	END	AS RiRatio
+
+INTO	#InfRi_Ratio
+
+FROM	#InfRi
+
+LEFT JOIN #InfRi_Total ON
+	#InfRi.FKGenIntStatsHeader = #InfRi_Total.FKGenIntStatsHeader	AND
+	#InfRi.FKGenIntStatsSec = #InfRi_Total.FKGenIntStatsSec		AND
+        #InfRi.FKGenIntStatsAmt = #InfRi.FKGenIntStatsAmt              AND
+	#InfRi.FKRevenueCode = #InfRi_Total.FKRevenueCode
+
+LEFT JOIN #InfRi_Total_Initial ON
+	#InfRi.FKGenIntStatsHeader = #InfRi_Total_Initial.FKGenIntStatsHeader	AND
+	#InfRi.FKGenIntStatsSec = #InfRi_Total_Initial.FKGenIntStatsSec		AND
+        #InfRi.FKGenIntStatsAmt = #InfRi_Total_Initial.FKGenIntStatsAmt         AND
+	#InfRi.FKRevenueCode = #InfRi_Total_Initial.FKRevenueCode
+
+CREATE INDEX #InfRi_Ratio_PrimaryKey ON #InfRi_Ratio ([FKGenRiIntPolNbr], [FKGenRiIntPolSeq])
+
+
+/****************************************************************************************************************/
+/***	Michael Dunne. 16th August 2005. XLCAP 96747 - Add zero amount BRK Records.	***/
+/****************************************************************************************************************/
+
+/***	Identify Statistical Brokerage transactions for which there is both Gross & Ri	***/
+SELECT
+
+	AllTransFullDetail.FKGenIntStatsHeader,
+	AllTransFullDetail.FKGenIntStatsSec,
+        AllTransFullDetail.FKGenIntStatsAmt
+INTO 	#InfAllTransGrossBrokerage
+
+FROM 	AllTransFullDetail
+
+/***	Ri Transaction Records with Brokerage	***/
+LEFT JOIN 
+	(SELECT 
+		AllTransFullDetail.FKGenIntStatsHeader,
+		AllTransFullDetail.FKGenIntStatsSec,
+		AllTransFullDetail.FKGenIntStatsAmt
+	 FROM 	AllTransFullDetail
+
+	 WHERE
+		AllTransFullDetail.PFKRiPolNbr <> '' 		AND 
+		AllTransFullDetail.PFKRiPolNbr IS NOT NULL
+	
+	 GROUP BY
+		AllTransFullDetail.FKGenIntStatsHeader,
+		AllTransFullDetail.FKGenIntStatsSec,
+                AllTransFullDetail.FKGenIntStatsAmt
+
+	 )AS RIBrokerageTransactions on
+		RIBrokerageTransactions.FKGenIntStatsHeader = AllTransFullDetail.FKGenIntStatsHeader		AND
+		RIBrokerageTransactions.FKGenIntStatsSec  = AllTransFullDetail.FKGenIntStatsSec AND
+                RIBrokerageTransactions.FKGenIntStatsAmt  = AllTransFullDetail.FKGenIntStatsAmt
+
+/***	Gross Transaction Records with Brokerage which have a matching Ri Transaction		***/
+WHERE 
+	(AllTransFullDetail.PFKRiPolNbr = '' OR AllTransFullDetail.PFKRiPolNbr IS NULL)		AND
+	 AllTransFullDetail.FKRevenueCode = 'BRK'						AND
+	 RIBrokerageTransactions.FKGenIntStatsHeader IS NOT NULL
+
+
+GROUP BY
+	AllTransFullDetail.FKGenIntStatsHeader,
+	AllTransFullDetail.FKGenIntStatsSec,
+        AllTransFullDetail.FKGenIntStatsAmt
+CREATE UNIQUE INDEX IX_#InfAllTransGrossBrokerage ON #InfAllTransGrossBrokerage (FKGenIntStatsHeader, FKGenIntStatsSec)
+
+
+/***	Now locate the Ri Transactions which have no matching Inwards Brokerage record, but do have a Gross
+	Transaction - Stats Key fields only so we can then link to the Gross Premium AllTrans record.			***/
+SELECT 
+	AllTransFullDetail.FKGenIntStatsHeader,
+	AllTransFullDetail.FKGenIntStatsSec,
+        AllTransFullDetail.FKGenIntStatsAmt
+
+INTO	#InfMissingBrokerageStatsKeys
+
+FROM	AllTransFullDetail 
+
+LEFT JOIN #InfAllTransGrossBrokerage ON
+		#InfAllTransGrossBrokerage.FKGenIntStatsHeader = AllTransFullDetail.FKGenIntStatsHeader	AND
+		#InfAllTransGrossBrokerage.FKGenIntStatsSec = AllTransFullDetail.FKGenIntStatsSec AND
+                #InfAllTransGrossBrokerage.FKGenIntStatsAmt =  AllTransFullDetail.FKGenIntStatsAmt
+
+LEFT JOIN 
+	(SELECT
+	 	FKGenIntStatsHeader,
+		FKGenIntStatsSec,
+		FKGenIntStatsAmt
+	 FROM 	AllTransFullDetail
+
+	 WHERE
+		AllTransFullDetail.PFKRiPolNbr = '' 		OR
+		AllTransFullDetail.PFKRiPolNbr IS NULL
+	
+	 GROUP BY
+		AllTransFullDetail.FKGenIntStatsHeader,
+		AllTransFullDetail.FKGenIntStatsSec,
+                AllTransFullDetail.FKGenIntStatsAmt
+
+	 )  AS GrossBrokerageTransactions ON
+
+		GrossBrokerageTransactions.FKGenIntStatsHeader = AllTransFullDetail.FKGenIntStatsHeader		AND
+		GrossBrokerageTransactions.FKGenIntStatsSec = AllTransFullDetail.FKGenIntStatsSec AND
+                GrossBrokerageTransactions.FKGenIntStatsAmt = AllTransFullDetail.FKGenIntStatsAmt
+WHERE
+	/***	Ri Brokerage Transactions		***/
+	AllTransFullDetail.PFKRiPolNbr <> ''			AND
+	AllTransFullDetail.PFKRiPolNbr IS NOT NULL		AND
+	AllTransFullDetail.FKRevenueCode = 'BRK' 		AND
+
+	/***	Not a matching Gross / Ri Brokerage Transaction		***/
+	#InfAllTransGrossBrokerage.FKGenIntStatsHeader IS NULL	AND
+
+	/***	Inwards Transaction Exists				***/
+	GrossBrokerageTransactions.FKGenIntStatsHeader IS NOT NULL
+    
+       
+
+GROUP BY
+	AllTransFullDetail.FKGenIntStatsHeader,
+	AllTransFullDetail.FKGenIntStatsSec,
+        AllTransFullDetail.FKGenIntStatsAmt
+
+CREATE UNIQUE INDEX IX_#InfMissingBrokerageStatsKeys ON #InfMissingBrokerageStatsKeys (FKGenIntStatsHeader, FKGenIntStatsSec)
+
+
+/***	Now locate the Gross Premium Transactions which have no matching Inwards Brokerage record, but do have a Gross
+	Transaction - this is from the above temporary table.									***/
+
+SELECT 
+
+	AllTransFullDetail.FKGenIntStatsHeader,
+	AllTransFullDetail.FKGenIntStatsSec,
+	AllTransFullDetail.FKGenIntStatsAmt,
+	AllTransFullDetail.FKGenIntStatsPostingKey,
+	AllTransFullDetail.FirstInstallmentStatsHeader,
+	AllTransFullDetail.FKGenUserId,
+	AllTransFullDetail.FKCompany,
+	AllTransFullDetail.FKBranch,
+	AllTransFullDetail.FKGenIntPolNbr,
+	AllTransFullDetail.FKGenIntPolSeq,
+	AllTransFullDetail.FKGenIntSec,
+	AllTransFullDetail.FKGenIntSecDetail,
+	AllTransFullDetail.CovrgSeq,
+	AllTransFullDetail.PFKPolNbr,
+	AllTransFullDetail.PFKPolSecCode,
+	AllTransFullDetail.PFKPolSubSecCode,
+	AllTransFullDetail.FKProducingOffice,
+	AllTransFullDetail.FKTypeOfContract,
+	AllTransFullDetail.FKIncProdDirRi,
+	AllTransFullDetail.FKOrigInsured,
+	AllTransFullDetail.FKBrokerOrAgent,
+	AllTransFullDetail.InceptionDate,
+	AllTransFullDetail.ExpiryDate,
+	AllTransFullDetail.UnderwritingYr,
+	AllTransFullDetail.LeadYn,
+	AllTransFullDetail.FKPrimaryLayer,
+	AllTransFullDetail.CaptiveYn,
+	AllTransFullDetail.FKProduct,
+	AllTransFullDetail.FKMainLine,
+	AllTransFullDetail.FKTerritoryScope,
+	AllTransFullDetail.FKCountryOfSettlement,
+	AllTransFullDetail.FKTradeOfBusinessa,
+	AllTransFullDetail.Trade2Code,
+	AllTransFullDetail.FKSubLine,
+	AllTransFullDetail.FKLocalReportCode,
+	AllTransFullDetail.FKCovrg,
+	AllTransFullDetail.FKCountry,
+	AllTransFullDetail.FKRiskGrade,
+	AllTransFullDetail.FKRatingBasisCode,
+	AllTransFullDetail.FKCovrgTypeCode,
+	AllTransFullDetail.Covrg1Value,
+	AllTransFullDetail.Covrg2Value,
+	AllTransFullDetail.DateTransEntered,
+	AllTransFullDetail.TransDateToBeProcessed,
+	AllTransFullDetail.AcctFromDate,
+	AllTransFullDetail.AcctToDate,
+	AllTransFullDetail.PeriodTransToBeReported,
+	AllTransFullDetail.FKInwardsOrOutwardsAcct,
+	AllTransFullDetail.InstallmentNbr,
+	AllTransFullDetail.FKTransCode,
+	AllTransFullDetail.FKEndorsementType,
+	AllTransFullDetail.TransColumnNbr,
+	AllTransFullDetail.FKRevenueCode,
+	AllTransFullDetail.R_TR_AMT_PAR,
+	AllTransFullDetail.R_TR_AMT_SPC,
+	AllTransFullDetail.FKOrigCcyCode,
+	AllTransFullDetail.FKAcctingCcyCode
+
+INTO	#InfMissingBrokerageAllTransRecs
+
+FROM	AllTransFullDetail 
+
+INNER JOIN #InfMissingBrokerageStatsKeys ON
+		#InfMissingBrokerageStatsKeys.FKGenIntStatsHeader = AllTransFullDetail.FKGenIntStatsHeader	AND
+		#InfMissingBrokerageStatsKeys.FKGenIntStatsSec = AllTransFullDetail.FKGenIntStatsSec AND
+                #InfMissingBrokerageStatsKeys.FKGenIntStatsSec = AllTransFullDetail.FKGenIntStatsAmt
+WHERE
+	/***	Gross Premium Transaction Records, so we can change these to "BRK"		***/
+	AllTransFullDetail.FKRevenueCode = 'PRM'	AND
+	(AllTransFullDetail.PFKRiPolNbr = '' 		OR
+	 AllTransFullDetail.PFKRiPolNbr IS NULL)
+
+
+CREATE INDEX IX_#InfMissingBrokerageAllTransRecs ON #InfMissingBrokerageAllTransRecs (FKGenIntStatsHeader, FKGenIntStatsSec, FKRevenueCode)
+CREATE INDEX IX_#InfMissingBrokerageAllTransRecsCompany ON #InfMissingBrokerageAllTransRecs (FKCompany)
+CREATE INDEX IX_#InfMissingBrokerageAllTransRecsBranch ON #InfMissingBrokerageAllTransRecs (FKBranch)
+
+
+
+/****************************************************************************************************************/
+/***	End of changes for XLCAP 96747						***/
+/****************************************************************************************************************/
+
+
+/*** Split the Inwards Amount using the Ri Attached ratio. We need all the fields here 	***/	
+/*** which will be output from AllTransFullDetail to Tfr_TransPolicyInwards as we 		***/
+/*** cannot join back to AllTransFullDetail without causing duplicating records.		***/
+
+/***	Michael Dunne. 9th August 2006.
+	As part of the GENIUS Incremental Project split AllTransFullDetail into Gross/Ri & 
+	Claims/Non-Claims
+	- Hence for this build amend AllTransFullDetail to TransPolicyInwards and remove the filter	***/
+SELECT
+	TransPolicyInwards.FKGenIntStatsHeader,
+	TransPolicyInwards.FKGenIntStatsSec,
+        TransPolicyInwards.FKGenIntStatsAmt,
+	TransPolicyInwards.FKGenIntStatsPostingKey,
+	TransPolicyInwards.FirstInstallmentStatsHeader,
+	TransPolicyInwards.FKGenUserId,
+	TransPolicyInwards.FKCompany,
+	TransPolicyInwards.FKBranch,
+	TransPolicyInwards.FKGenIntPolNbr,
+	TransPolicyInwards.FKGenIntPolSeq,
+	TransPolicyInwards.FKGenIntSec,
+	TransPolicyInwards.FKGenIntSecDetail,
+	TransPolicyInwards.CovrgSeq,
+	TransPolicyInwards.PFKPolNbr,
+	TransPolicyInwards.PFKPolSecCode,
+	TransPolicyInwards.PFKPolSubSecCode,
+	TransPolicyInwards.FKProducingOffice,
+	TransPolicyInwards.FKTypeOfContract,
+	TransPolicyInwards.FKIncProdDirRi,
+	TransPolicyInwards.FKOrigInsured,
+	TransPolicyInwards.FKBrokerOrAgent,
+	TransPolicyInwards.InceptionDate,
+	TransPolicyInwards.ExpiryDate,
+
+	CASE
+		WHEN	(TransPolicyInwards.UnderwritingYr IS NULL) OR (TransPolicyInwards.UnderwritingYr = 0) THEN 0
+		ELSE	TransPolicyInwards.UnderwritingYr + 1900
+	END	AS	UnderwritingYr,
+
+	TransPolicyInwards.LeadYn,
+	TransPolicyInwards.FKPrimaryLayer,
+	TransPolicyInwards.CaptiveYn,
+	TransPolicyInwards.FKProduct,
+	TransPolicyInwards.FKMainLine,
+	TransPolicyInwards.FKTerritoryScope,
+	TransPolicyInwards.FKCountryOfSettlement,
+	TransPolicyInwards.FKTradeOfBusinessa,
+	TransPolicyInwards.Trade2Code,
+	TransPolicyInwards.FKSubLine,
+	TransPolicyInwards.FKLocalReportCode,
+	TransPolicyInwards.FKCovrg,
+	TransPolicyInwards.FKCountry,
+	TransPolicyInwards.FKRiskGrade,
+	TransPolicyInwards.FKRatingBasisCode,
+	TransPolicyInwards.FKCovrgTypeCode,
+	TransPolicyInwards.Covrg1Value,
+	TransPolicyInwards.Covrg2Value,
+	TransPolicyInwards.DateTransEntered,
+	TransPolicyInwards.TransDateToBeProcessed,
+	TransPolicyInwards.AcctFromDate,
+	TransPolicyInwards.AcctToDate,
+
+	CASE
+		WHEN	(TransPolicyInwards.PeriodTransToBeReported IS NULL) OR (TransPolicyInwards.PeriodTransToBeReported = 0) THEN 0
+		ELSE	TransPolicyInwards.PeriodTransToBeReported + 190000
+	END	AS	PeriodTransToBeReported,
+
+	TransPolicyInwards.FKInwardsOrOutwardsAcct,
+
+/***	Michael Dunne. 13th April 2005. XLCAP 74104.
+	- Add new Installment Number field.			***/
+	TransPolicyInwards.InstallmentNbr,
+
+	TransPolicyInwards.FKTransCode,
+	TransPolicyInwards.FKEndorsementType,		-- Michael Dunne. 19/09/2004.
+	TransPolicyInwards.TransColumnNbr,
+
+	/***	Michael Dunne. 2nd March 2005. So as to link Inwards to Outwards transactions on Commission we need to have a common Revenue Code	***/
+	/***					 - Chose "BRK".												***/
+
+	CASE
+		WHEN	(TransPolicyInwards.FKRevenueCode IN ('RIC', 'RIR'))	THEN	'BRK'
+		ELSE	TransPolicyInwards.FKRevenueCode
+	END	AS	FKRevenueCode,
+	
+/***	TransPolicyInwards.FKRevenueCode,	***/
+	TransPolicyInwards.R_TR_AMT_PAR,
+	TransPolicyInwards.R_TR_AMT_SPC,
+
+	TransPolicyInwards.FKOrigCcyCode,
+	TransPolicyInwards.FKAcctingCcyCode,
+
+	#InfRi_Ratio.PFKRiPolNbr,
+	#InfRi_Ratio.FKGenRiIntPolNbr,
+	#InfRi_Ratio.FKGenRiIntPolSeq,
+	#InfRi_Ratio.FKGenRiIntSecSeq,
+	#InfRi_Ratio.FKGenIntStatsPostingKey		AS	Out_FKGenIntStatsPostingKey,
+	#InfRi_Ratio.R_TR_AMT_PAR			AS	Out_R_TR_AMT_PAR,
+
+	CASE
+		WHEN	(#InfRi_Ratio.RiRatio IS NULL) THEN	TransPolicyInwards.OrigCcyAmt
+		ELSE	TransPolicyInwards.OrigCcyAmt * #InfRi_Ratio.RiRatio
+	END	AS	OrigCcyAmtPerRiPolicy,
+
+	CASE
+		WHEN	(#InfRi_Ratio.RiRatio IS NULL) THEN	TransPolicyInwards.AcctingCcyAmt
+		ELSE	TransPolicyInwards.AcctingCcyAmt * #InfRi_Ratio.RiRatio
+	END	AS	AcctingCcyAmtPerRiPolicy,
+
+	CASE
+		WHEN	(#InfRi_Ratio.RiRatio IS NULL) THEN	TransPolicyInwards.BaseCcyAmtRoeDateBooked
+		ELSE	TransPolicyInwards.BaseCcyAmtRoeDateBooked * #InfRi_Ratio.RiRatio
+	END	AS	BaseCcyAmtRoeDateBookedPerRiPolicy,
+
+	CASE
+		WHEN	(#InfRi_Ratio.RiRatio IS NULL) AND (TransPolicyInwards.FKOrigCcyCode = 'USD')			-- MD 19/11/2004
+			THEN	TransPolicyInwards.OrigCcyAmt
+		WHEN	(#InfRi_Ratio.RiRatio IS NULL) AND (TransPolicyInwards.FKAcctingCcyCode = 'USD')			-- MD 19/11/2004
+			THEN	TransPolicyInwards.AcctingCcyAmt
+		WHEN	(#InfRi_Ratio.RiRatio IS NULL) AND (BaseCcyCompany.FKCcyCode = 'USD')				-- MD 19/11/2004
+			THEN	TransPolicyInwards.BaseCcyAmtRoeDateBooked
+
+		WHEN	(#InfRi_Ratio.RiRatio IS NOT NULL) AND (TransPolicyInwards.FKOrigCcyCode = 'USD')		-- MD 19/11/2004
+			THEN	TransPolicyInwards.OrigCcyAmt * #InfRi_Ratio.RiRatio
+		WHEN	(#InfRi_Ratio.RiRatio IS NOT NULL) AND (TransPolicyInwards.FKAcctingCcyCode = 'USD')		-- MD 19/11/2004
+			THEN	TransPolicyInwards.AcctingCcyAmt * #InfRi_Ratio.RiRatio
+		WHEN	(#InfRi_Ratio.RiRatio IS NOT NULL) AND (BaseCcyCompany.FKCcyCode = 'USD')			-- MD 19/11/2004
+			THEN	TransPolicyInwards.BaseCcyAmtRoeDateBooked * #InfRi_Ratio.RiRatio
+
+		WHEN	(#InfRi_Ratio.RiRatio IS NULL) AND (TransPolicyInwards.PeriodTransToBeReported <= 9901 AND #InfEarliestRoe.ExchangeRate IS NOT NULL)		
+			THEN	TransPolicyInwards.BaseCcyAmtRoeDateBooked * #InfEarliestRoe.ExchangeRate
+
+		WHEN	(#InfRi_Ratio.RiRatio IS NULL) AND (TransPolicyInwards.PeriodTransToBeReported > 9901 AND #InfRptPeriodDateRoe.ExchangeRate IS NOT NULL)
+			THEN	TransPolicyInwards.BaseCcyAmtRoeDateBooked * #InfRptPeriodDateRoe.ExchangeRate
+
+		WHEN	(#InfRi_Ratio.RiRatio IS NULL) AND (TransPolicyInwards.PeriodTransToBeReported > 9901 AND #InfCurrentRoe.ExchangeRate IS NOT NULL)
+			THEN	TransPolicyInwards.BaseCcyAmtRoeDateBooked * #InfCurrentRoe.ExchangeRate
+
+		WHEN	(#InfRi_Ratio.RiRatio IS NOT NULL) AND (TransPolicyInwards.PeriodTransToBeReported <= 9901 AND #InfEarliestRoe.ExchangeRate IS NOT NULL)		
+			THEN	TransPolicyInwards.BaseCcyAmtRoeDateBooked * #InfEarliestRoe.ExchangeRate * #InfRi_Ratio.RiRatio
+
+		WHEN	(#InfRi_Ratio.RiRatio IS NOT NULL) AND (TransPolicyInwards.PeriodTransToBeReported > 9901 AND #InfRptPeriodDateRoe.ExchangeRate IS NOT NULL)
+			THEN	TransPolicyInwards.BaseCcyAmtRoeDateBooked * #InfRptPeriodDateRoe.ExchangeRate * #InfRi_Ratio.RiRatio
+
+		WHEN	(#InfRi_Ratio.RiRatio IS NOT NULL) AND (TransPolicyInwards.PeriodTransToBeReported > 9901 AND #InfCurrentRoe.ExchangeRate IS NOT NULL)
+
+			THEN	TransPolicyInwards.BaseCcyAmtRoeDateBooked * #InfCurrentRoe.ExchangeRate * #InfRi_Ratio.RiRatio
+
+		ELSE	0
+	END	AS	CorpAmtPerRiPolicy
+
+
+INTO	#InfAllTrans_ByRiPol_Inwards
+
+FROM	TransPolicyInwards
+
+LEFT JOIN #InfRi_Ratio ON
+		TransPolicyInwards.FKGenIntStatsHeader = #InfRi_Ratio.FKGenIntStatsHeader	AND
+		TransPolicyInwards.FKGenIntStatsSec = #InfRi_Ratio.FKGenIntStatsSec		AND
+                TransPolicyInwards.FKGenIntStatsAmt = #InfRi_Ratio.FKGenIntStatsAmt             AND
+		TransPolicyInwards.FKRevenueCode = #InfRi_Ratio.FKRevenueCode
+
+LEFT JOIN #InfCurrentRoe ON
+		TransPolicyInwards.FKCompany = #InfCurrentRoe.FKCompany
+
+LEFT JOIN #InfEarliestRoe ON
+		TransPolicyInwards.FKCompany = #InfEarliestRoe.FKCompany
+
+LEFT JOIN #InfRptPeriodDateRoe ON
+		TransPolicyInwards.FKCompany = #InfRptPeriodDateRoe.FKCompany		AND
+		('X' + Convert(varchar(6),TransPolicyInwards.PeriodTransToBeReported + 190000)) = #InfRptPeriodDateRoe.RateGroup
+
+/***	Michael Dunne. We need to obtain the Base Currency Code so we can check if it is USD. If it is then there is no need for Corporate Currency Conversion		***/
+LEFT JOIN BaseCcyCompany ON							-- MD 19/11/2004
+		TransPolicyInwards.FKCompany = BaseCcyCompany.PKCompany
+
+
+/***	Michael Dunne. 9th August 2006. Filter no longer required as only Gross non-Claim records 
+	in TransPolicyInwards
+WHERE	(AllTransFullDetail.PFKRiPolNbr = '' OR AllTransFullDetail.PFKRiPolNbr IS NULL)		AND
+		AllTransFullDetail.TransColumnNbr <> 5	AND
+		AllTransFullDetail.PFKClmNbr = ''	
+***/
+
+
+/****************************************************************************************************************/
+/***	Michael Dunne. 16th August 2005. XLCAP 96747 - Add zero amount BRK Records.	***/
+/****************************************************************************************************************/
+
+INSERT INTO	#InfAllTrans_ByRiPol_Inwards
+
+SELECT
+	#InfMissingBrokerageAllTransRecs.FKGenIntStatsHeader,
+	#InfMissingBrokerageAllTransRecs.FKGenIntStatsSec,
+        #InfMissingBrokerageAllTransRecs.FKGenIntStatsAmt,
+	#InfMissingBrokerageAllTransRecs.FKGenIntStatsPostingKey,
+	#InfMissingBrokerageAllTransRecs.FirstInstallmentStatsHeader,
+	#InfMissingBrokerageAllTransRecs.FKGenUserId,
+	#InfMissingBrokerageAllTransRecs.FKCompany,
+	#InfMissingBrokerageAllTransRecs.FKBranch,
+	#InfMissingBrokerageAllTransRecs.FKGenIntPolNbr,
+	#InfMissingBrokerageAllTransRecs.FKGenIntPolSeq,
+	#InfMissingBrokerageAllTransRecs.FKGenIntSec,
+	#InfMissingBrokerageAllTransRecs.FKGenIntSecDetail,
+	#InfMissingBrokerageAllTransRecs.CovrgSeq,
+	#InfMissingBrokerageAllTransRecs.PFKPolNbr,
+	#InfMissingBrokerageAllTransRecs.PFKPolSecCode,
+	#InfMissingBrokerageAllTransRecs.PFKPolSubSecCode,
+	#InfMissingBrokerageAllTransRecs.FKProducingOffice,
+	#InfMissingBrokerageAllTransRecs.FKTypeOfContract,
+	#InfMissingBrokerageAllTransRecs.FKIncProdDirRi,
+	#InfMissingBrokerageAllTransRecs.FKOrigInsured,
+	#InfMissingBrokerageAllTransRecs.FKBrokerOrAgent,
+	#InfMissingBrokerageAllTransRecs.InceptionDate,
+	#InfMissingBrokerageAllTransRecs.ExpiryDate,
+
+	CASE
+		WHEN	(#InfMissingBrokerageAllTransRecs.UnderwritingYr IS NULL) OR (#InfMissingBrokerageAllTransRecs.UnderwritingYr = 0) THEN 0
+		ELSE	#InfMissingBrokerageAllTransRecs.UnderwritingYr + 1900
+	END	AS	UnderwritingYr,
+
+	#InfMissingBrokerageAllTransRecs.LeadYn,
+	#InfMissingBrokerageAllTransRecs.FKPrimaryLayer,
+	#InfMissingBrokerageAllTransRecs.CaptiveYn,
+	#InfMissingBrokerageAllTransRecs.FKProduct,
+	#InfMissingBrokerageAllTransRecs.FKMainLine,
+	#InfMissingBrokerageAllTransRecs.FKTerritoryScope,
+	#InfMissingBrokerageAllTransRecs.FKCountryOfSettlement,
+	#InfMissingBrokerageAllTransRecs.FKTradeOfBusinessa,
+	#InfMissingBrokerageAllTransRecs.Trade2Code,
+	#InfMissingBrokerageAllTransRecs.FKSubLine,
+	#InfMissingBrokerageAllTransRecs.FKLocalReportCode,
+	#InfMissingBrokerageAllTransRecs.FKCovrg,
+	#InfMissingBrokerageAllTransRecs.FKCountry,
+	#InfMissingBrokerageAllTransRecs.FKRiskGrade,
+	#InfMissingBrokerageAllTransRecs.FKRatingBasisCode,
+	#InfMissingBrokerageAllTransRecs.FKCovrgTypeCode,
+	#InfMissingBrokerageAllTransRecs.Covrg1Value,
+	#InfMissingBrokerageAllTransRecs.Covrg2Value,
+	#InfMissingBrokerageAllTransRecs.DateTransEntered,
+	#InfMissingBrokerageAllTransRecs.TransDateToBeProcessed,
+	#InfMissingBrokerageAllTransRecs.AcctFromDate,
+	#InfMissingBrokerageAllTransRecs.AcctToDate,
+
+	CASE
+		WHEN	(#InfMissingBrokerageAllTransRecs.PeriodTransToBeReported IS NULL) OR (#InfMissingBrokerageAllTransRecs.PeriodTransToBeReported = 0) THEN 0
+		ELSE	#InfMissingBrokerageAllTransRecs.PeriodTransToBeReported + 190000
+	END	AS	PeriodTransToBeReported,
+
+	#InfMissingBrokerageAllTransRecs.FKInwardsOrOutwardsAcct,
+	#InfMissingBrokerageAllTransRecs.InstallmentNbr,
+
+	#InfMissingBrokerageAllTransRecs.FKTransCode,
+	#InfMissingBrokerageAllTransRecs.FKEndorsementType,
+	#InfMissingBrokerageAllTransRecs.TransColumnNbr,
+
+	'BRK'	AS	FKRevenueCode,
+	
+	#InfMissingBrokerageAllTransRecs.R_TR_AMT_PAR,
+	#InfMissingBrokerageAllTransRecs.R_TR_AMT_SPC,
+
+	#InfMissingBrokerageAllTransRecs.FKOrigCcyCode,
+	#InfMissingBrokerageAllTransRecs.FKAcctingCcyCode,
+	#InfRi_Ratio.PFKRiPolNbr,
+	#InfRi_Ratio.FKGenRiIntPolNbr,
+	#InfRi_Ratio.FKGenRiIntPolSeq,
+	#InfRi_Ratio.FKGenRiIntSecSeq,
+	#InfRi_Ratio.FKGenIntStatsPostingKey		AS	Out_FKGenIntStatsPostingKey,
+	#InfRi_Ratio.R_TR_AMT_PAR			AS	Out_R_TR_AMT_PAR,
+
+	0	AS	OrigCcyAmtPerRiPolicy,
+	0	AS	AcctingCcyAmtPerRiPolicy,
+	0	AS	BaseCcyAmtRoeDateBookedPerRiPolicy,
+	0	AS	CorpAmtPerRiPolicy
+
+
+FROM	#InfMissingBrokerageAllTransRecs
+
+LEFT JOIN #InfRi_Ratio ON
+		#InfMissingBrokerageAllTransRecs.FKGenIntStatsHeader = #InfRi_Ratio.FKGenIntStatsHeader		AND
+		#InfMissingBrokerageAllTransRecs.FKGenIntStatsSec = #InfRi_Ratio.FKGenIntStatsSec		AND
+                #InfMissingBrokerageAllTransRecs.FKGenIntStatsAmt = #InfRi_Ratio.FKGenIntStatsAmt	        AND
+		#InfMissingBrokerageAllTransRecs.FKRevenueCode = #InfRi_Ratio.FKRevenueCode
+
+
+/****************************************************************************************************************/
+/***	End of changes for XLCAP 96747						***/
+/****************************************************************************************************************/
+
+
+CREATE INDEX #InfAllTrans_ByRiPol_Inwards_PrimaryKey ON #InfAllTrans_ByRiPol_Inwards ([FKGenRiIntPolNbr], [FKGenRiIntPolSeq], [FKGenRiIntSecSeq], [AcctFromDate], [AcctToDate])
+
+
+/*** Active Participation Records - So can split the Amount by Participant. */
+
+SELECT 
+	FKGenIntPolNum,
+	FKGenIntPolSeq,
+	FKGenIntPolSec,
+	FKNameCode,
+	ShareOfWhole,
+	GroupFlag,
+	ParticipationGrpStartDate,
+	ParticipationGrpEndDate,
+	FKMajorParticipantNameCode
+
+INTO	#InfActiveRiParticipants
+
+FROM	RIParticipantGroup
+
+WHERE	ParticipationMaintenanceStatus = '1'
+
+CREATE INDEX [IX_#InfActiveRiParticipants_Key] ON [dbo].[#InfActiveRiParticipants]([FKGenIntPolNum], [FKGenIntPolSeq], [ParticipationGrpStartDate], [ParticipationGrpEndDate]) ON [PRIMARY]
+CREATE INDEX [IX_#InfActiveRiParticipants_FKNameCode] ON [dbo].[#InfActiveRiParticipants]([FKNameCode]) ON [PRIMARY]
+CREATE INDEX [IX_#InfActiveRiParticipants_FKMajorParticipantNameCode] ON [dbo].[#InfActiveRiParticipants]([FKMajorParticipantNameCode]) ON [PRIMARY]
+
+/*** Final Temporary Table, with the Values now further split down by RI Participant ***/
+
+SELECT
+	#InfAllTrans_ByRiPol_Inwards.FKGenIntStatsHeader,
+	#InfAllTrans_ByRiPol_Inwards.FKGenIntStatsSec,
+        #InfAllTrans_ByRiPol_Inwards.FKGenIntStatsAmt,
+	#InfAllTrans_ByRiPol_Inwards.FKRevenueCode,
+	#InfAllTrans_ByRiPol_Inwards.PFKRiPolNbr,
+	#InfAllTrans_ByRiPol_Inwards.FKGenRiIntPolNbr,
+	#InfAllTrans_ByRiPol_Inwards.FKGenRiIntPolSeq,
+	#InfAllTrans_ByRiPol_Inwards.FKGenRiIntSecSeq,
+	#InfAllTrans_ByRiPol_Inwards.FKGenIntStatsPostingKey,
+	#InfAllTrans_ByRiPol_Inwards.FirstInstallmentStatsHeader,
+	#InfAllTrans_ByRiPol_Inwards.FKGenUserId,
+	#InfAllTrans_ByRiPol_Inwards.FKCompany,
+	#InfAllTrans_ByRiPol_Inwards.FKBranch,
+	#InfAllTrans_ByRiPol_Inwards.FKGenIntPolNbr,
+	#InfAllTrans_ByRiPol_Inwards.FKGenIntPolSeq,
+	#InfAllTrans_ByRiPol_Inwards.FKGenIntSec,
+	#InfAllTrans_ByRiPol_Inwards.FKGenIntSecDetail,
+	#InfAllTrans_ByRiPol_Inwards.CovrgSeq,
+	#InfAllTrans_ByRiPol_Inwards.PFKPolNbr,
+	#InfAllTrans_ByRiPol_Inwards.PFKPolSecCode,
+	#InfAllTrans_ByRiPol_Inwards.PFKPolSubSecCode,
+	#InfAllTrans_ByRiPol_Inwards.FKProducingOffice,
+	#InfAllTrans_ByRiPol_Inwards.FKTypeOfContract,
+	#InfAllTrans_ByRiPol_Inwards.FKIncProdDirRi,
+	#InfAllTrans_ByRiPol_Inwards.FKOrigInsured,
+	#InfAllTrans_ByRiPol_Inwards.FKBrokerOrAgent,
+	#InfAllTrans_ByRiPol_Inwards.InceptionDate,
+	#InfAllTrans_ByRiPol_Inwards.ExpiryDate,
+	#InfAllTrans_ByRiPol_Inwards.UnderwritingYr,
+
+	#InfAllTrans_ByRiPol_Inwards.LeadYn,
+	#InfAllTrans_ByRiPol_Inwards.FKPrimaryLayer,
+	#InfAllTrans_ByRiPol_Inwards.CaptiveYn,
+	#InfAllTrans_ByRiPol_Inwards.FKProduct,
+	#InfAllTrans_ByRiPol_Inwards.FKMainLine,
+	#InfAllTrans_ByRiPol_Inwards.FKTerritoryScope,
+	#InfAllTrans_ByRiPol_Inwards.FKCountryOfSettlement,
+	#InfAllTrans_ByRiPol_Inwards.FKTradeOfBusinessa,
+	#InfAllTrans_ByRiPol_Inwards.Trade2Code,
+	#InfAllTrans_ByRiPol_Inwards.FKSubLine,
+	#InfAllTrans_ByRiPol_Inwards.FKLocalReportCode,
+	#InfAllTrans_ByRiPol_Inwards.FKCovrg,
+	#InfAllTrans_ByRiPol_Inwards.FKCountry,
+	#InfAllTrans_ByRiPol_Inwards.FKRiskGrade,
+	#InfAllTrans_ByRiPol_Inwards.FKRatingBasisCode,
+	#InfAllTrans_ByRiPol_Inwards.FKCovrgTypeCode,
+	#InfAllTrans_ByRiPol_Inwards.Covrg1Value,
+	#InfAllTrans_ByRiPol_Inwards.Covrg2Value,
+	#InfAllTrans_ByRiPol_Inwards.DateTransEntered,
+	#InfAllTrans_ByRiPol_Inwards.TransDateToBeProcessed,
+	#InfAllTrans_ByRiPol_Inwards.AcctFromDate,
+	#InfAllTrans_ByRiPol_Inwards.AcctToDate,
+	#InfAllTrans_ByRiPol_Inwards.PeriodTransToBeReported,
+	#InfAllTrans_ByRiPol_Inwards.FKInwardsOrOutwardsAcct,
+
+/***	Michael Dunne. 13th April 2005. XLCAP 74104.
+	- Add new Installment Number field.			***/
+	#InfAllTrans_ByRiPol_Inwards.InstallmentNbr,
+
+	#InfAllTrans_ByRiPol_Inwards.FKTransCode,
+	#InfAllTrans_ByRiPol_Inwards.FKEndorsementType,		-- Michael Dunne. 19/09/2004.
+	#InfAllTrans_ByRiPol_Inwards.TransColumnNbr,
+	#InfAllTrans_ByRiPol_Inwards.Out_FKGenIntStatsPostingKey,
+	#InfAllTrans_ByRiPol_Inwards.Out_R_TR_AMT_PAR,
+	#InfAllTrans_ByRiPol_Inwards.R_TR_AMT_PAR,
+	#InfAllTrans_ByRiPol_Inwards.R_TR_AMT_SPC,
+	#InfAllTrans_ByRiPol_Inwards.FKOrigCcyCode,
+	#InfAllTrans_ByRiPol_Inwards.FKAcctingCcyCode,
+
+	CASE
+		WHEN	(#InfActiveRiParticipants.ShareOfWhole IS NULL)	THEN	#InfAllTrans_ByRiPol_Inwards.OrigCcyAmtPerRiPolicy
+		ELSE	#InfAllTrans_ByRiPol_Inwards.OrigCcyAmtPerRiPolicy * (#InfActiveRiParticipants.ShareOfWhole / 100)
+	END	AS	OrigCcyAmtPerRiPolicy,
+
+	CASE
+		WHEN	(#InfActiveRiParticipants.ShareOfWhole IS NULL)	THEN	#InfAllTrans_ByRiPol_Inwards.AcctingCcyAmtPerRiPolicy
+		ELSE	#InfAllTrans_ByRiPol_Inwards.AcctingCcyAmtPerRiPolicy * (#InfActiveRiParticipants.ShareOfWhole / 100)
+	END	AS	AcctingCcyAmtPerRiPolicy,
+
+	CASE
+		WHEN	(#InfActiveRiParticipants.ShareOfWhole IS NULL)	THEN	#InfAllTrans_ByRiPol_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+		ELSE	#InfAllTrans_ByRiPol_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy * (#InfActiveRiParticipants.ShareOfWhole / 100)
+	END	AS	BaseCcyAmtRoeDateBookedPerRiPolicy,
+
+	CASE
+		WHEN	(#InfActiveRiParticipants.ShareOfWhole IS NULL)	THEN	#InfAllTrans_ByRiPol_Inwards.CorpAmtPerRiPolicy
+		ELSE	#InfAllTrans_ByRiPol_Inwards.CorpAmtPerRiPolicy * (#InfActiveRiParticipants.ShareOfWhole / 100)
+	END	AS	CorpAmtPerRiPolicy,
+
+	#InfActiveRiParticipants.FKNameCode
+
+INTO	#InfAllTrans_ByRiParticipant_Inwards
+
+FROM	#InfAllTrans_ByRiPol_Inwards
+
+LEFT JOIN #InfActiveRiParticipants ON
+	#InfAllTrans_ByRiPol_Inwards.FKGenRiIntPolNbr = #InfActiveRiParticipants.FKGenIntPolNum		AND
+	#InfAllTrans_ByRiPol_Inwards.FKGenRiIntPolSeq = #InfActiveRiParticipants.FKGenIntPolSeq		AND
+	#InfAllTrans_ByRiPol_Inwards.AcctFromDate >= #InfActiveRiParticipants.ParticipationGrpStartDate	AND
+	#InfAllTrans_ByRiPol_Inwards.AcctToDate <= #InfActiveRiParticipants.ParticipationGrpEndDate
+	
+	
+CREATE INDEX [IX_#InfAllTrans_ByRiParticipant_Inwards_Company] ON [dbo].[#InfAllTrans_ByRiParticipant_Inwards]([FKCompany]) ON [PRIMARY]	
+CREATE INDEX [IX_#InfAllTrans_ByRiParticipant_Inwards_Branch] ON [dbo].[#InfAllTrans_ByRiParticipant_Inwards]([FKBranch]) ON [PRIMARY]	
+CREATE INDEX [IX_#InfAllTrans_ByRiParticipant_Inwards_IntPolKeys] ON [dbo].[#InfAllTrans_ByRiParticipant_Inwards]([FKGenIntPolNbr], [FKGenIntPolSeq]) ON [PRIMARY]	
+CREATE INDEX [IX_#InfAllTrans_ByRiParticipant_Inwards_IntStatsKeys] ON [dbo].[#InfAllTrans_ByRiParticipant_Inwards]([FKGenIntStatsHeader], [FKGenIntStatsSec], [FKRevenueCode]) ON [PRIMARY]	
+
+
+
+/***	Michael Dunne.	8th November 2004					****/
+/*** 5. GeneralLedger records which link to the Inwards Statistical records.		****/
+/***	- The GeneralLedger table is an ODS3 Built table and hence we need to	****/
+/***	  ensure that the General Ledger build has completed PRIOR to this build.	****/
+
+/*Changed by Tayo. Was previously reading from Trf_GeneralLedger_Gross. This is not required now. Read from BrokerBalance instead*/
+SELECT
+
+	FKStats,
+	FKStatsPosting,
+	SettlementDate,
+        CASE	
+ 	 WHEN	(AllocFlag = '2')		THEN	0		--- Michael Dunne. 5th October. Fully Allocated
+	 WHEN	(AllocFlag = '1')		THEN	100		--- Michael Dunne. 5th October. Unallocated
+	 WHEN	(ClosedAmtOrig = 0)	THEN	0
+	ELSE	((ClosedAmtOrig - AllocAmtOrig - WriteOffOrig) / ClosedAmtOrig) * 100
+	END	AS	UnallocPcnt,
+	AllocFlag,
+	LastAllocationDate,
+        AccountsHeader.PKAcctCode AS FKAcctCode
+
+INTO	#Inf_BrokerBalance
+
+FROM	BrokerBalance
+
+LEFT JOIN AccountsHeader ON
+BrokerBalance.PFKAcctMastSeq = AccountsHeader.PKAcctCode
+
+WHERE	
+	 FKStats <> 0		AND
+	 GrossRiIndicator <> '0'	-- Gross
+
+
+CREATE INDEX [#IX_BrokerBalance_Key] ON [#Inf_BrokerBalance] ([FKStats], [FKStatsPosting])
+
+
+/*******************************************************************************************************/
+/***	End of Temporary Table builds.						****/
+/*******************************************************************************************************/
+
+
+/***	INSERT Records into the TransPolicyInwards table ***/
+
+TRUNCATE TABLE InformaticaTransPolicyInwards
+
+INSERT INTO InformaticaTransPolicyInwards
+
+SELECT	
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsHeader,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsSec,
+        #InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsAmt,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsPostingKey,
+	#InfAllTrans_ByRiParticipant_Inwards.FirstInstallmentStatsHeader,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenUserId,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration		
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKGenUserId = '' OR #InfAllTrans_ByRiParticipant_Inwards.FKGenUserId IS NULL) THEN ''
+		WHEN	GeniusUserIdNames.FullName IS NULL 	THEN	'Unknown'
+		ELSE	GeniusUserIdNames.FullName
+	END	AS	FKGenUserIdName,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKCompany,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKCompany IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKCompany = '') THEN ''
+		ELSE	CompanyNames.CompanyName
+	END	AS	FKCompanyName,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKBranch,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKBranch IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKBranch = '') THEN  ''
+		ELSE	BranchNames.BranchName
+	END	AS	FKBranchName,	
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntPolNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntPolSeq,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntSec,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntSecDetail,
+	#InfAllTrans_ByRiParticipant_Inwards.CovrgSeq			AS	FKCovrgSeq,
+	#InfAllTrans_ByRiParticipant_Inwards.PFKPolNbr			AS	FKPolNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.PFKPolSecCode		AS	FKPolSecCode,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.PFKPolSecCode IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.PFKPolSecCode = '') THEN ''
+		ELSE	SectionTypes.SecTypeLDesc
+	END	AS	FKPolSecCodeDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.PFKPolSubSecCode		AS	FKPolSubSecCode,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.PFKPolSubSecCode IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.PFKPolSubSecCode = '') THEN ''
+		ELSE	SubSectionTypes.SubSecTypeDescription
+
+	END	AS	FKPolSubSecCodeDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKProducingOffice,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKProducingOffice IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKProducingOffice = '') THEN ''
+		WHEN	ProducingOffices.ProducingOfficeLDesc IS NULL 		THEN	'Unknown'
+		ELSE	ProducingOffices.ProducingOfficeLDesc
+	END	AS	FKProducingOfficeDesc,
+***/
+
+/***	Michael Dunne. 11th May 2004. Remove field as from PolicyDetails rather than Transactional		***/
+/***	PolicyDetails.ImcAgreementNbr 		AS FKProgramNbr,					***/
+	#InfAllTrans_ByRiParticipant_Inwards.FKTypeOfContract,
+
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration		
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKTypeOfContract IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKTypeOfContract = '') THEN ''
+		ELSE	ContractTypes.ContractTypeLDesc
+	END	AS	FKTypeOfContractDesc,
+***/
+
+/***	Michael Dunne. 11th May 2004. Remove field as from PolicyDetails rather than Transactional		***/
+/***	PolicyDetails.NewOldEconomyFlag,								***/
+	
+	#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRi,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRi IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRi = '') THEN ''
+		ELSE	IncProdDirRiCodes.IncProdDirRiLDesc
+	END	AS	FKIncProdDirRiDesc,
+***/
+	
+/***	Michael Dunne. 15th April 2005. The logic for deriving Direct/Assumed in Peoplesoft has changed and hence we need to match this here.	***/
+/***
+	CASE
+		WHEN (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('IW','PW')) 			THEN 'I' --'Internal'
+		WHEN (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('PRT','IE','PE'))		THEN 'A' --'Assumed'
+		WHEN (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('ID','PD','XX'))		THEN 'D' --'Direct'
+		ELSE 'D' --'Direct' --Catch all should not be needed
+	END	AS	DirectAssumedFlag,
+***/
+--WI 6038 changes to include new FKIncProdDirRI values
+	CASE
+		WHEN	(AccountsHeader.FKAnalysisCode1 = 'I')						THEN 'I'	--'Internal'
+		WHEN	 (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('IW', 'PW','IWT','PWT')) 		THEN 'I' 	--'Internal'
+		WHEN 	(#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('IE', 'PE','IET','PET'))			THEN 'A' 	--'Assumed'
+		WHEN 	(#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('ID', 'PD', 'XX', 'PRT','IDT','PDT'))	THEN 'D'	--'Direct'
+		ELSE	 'D' 												--'Direct' --Catch all should not be needed
+	END	AS	DirectAssumedFlag,
+
+	/**********************************************************************************/
+	/***	End of changes for deriving Direct/Assumed Flag.		***/
+	/**********************************************************************************/
+
+/***	Michael Dunne. 11th May 2004. Remove field as from PolicyDetails rather than Transactional		***/
+/***	PolicyDetails.PolTitle,										***/
+	#InfAllTrans_ByRiParticipant_Inwards.FKOrigInsured,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN (#InfAllTrans_ByRiParticipant_Inwards.FKOrigInsured IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKOrigInsured = '') THEN  ''
+		ELSE	OrigInsuredNames.FullName
+	END	AS 	FKOrigInsuredName,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKBrokerOrAgent,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKBrokerOrAgent IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKBrokerOrAgent = '') THEN ''
+		ELSE	BrokerOrAgentNames.FullName
+	END	AS	FKBrokerOrAgentName,	
+***/
+
+/***	Michael Dunne. 11th May 2004. Remove fields as from PolicyDetails rather than Transactional	***/	
+/***	PolicyDetails.FKLeadCedn		AS	FKLeadCedn,					***/
+
+/***	CASE
+		WHEN	(PolicyDetails.FKLeadCedn IS NULL OR PolicyDetails.FKLeadCedn = '') THEN ''
+		ELSE	LeadCednNames.FullName
+	END	AS	FKLeadCednName,								***/
+
+/***	#LeadCedentCtry.SecondAreaCode		AS FKLeadCednCtryCode,			***/
+
+/***	CASE
+		WHEN	(#LeadCedentCtry.SecondAreaCode IS NULL) OR (#LeadCedentCtry.SecondAreaCode = '') THEN ''
+		ELSE	#LeadCedentCtryDesc.AreaCodeLDesc
+	END	AS	FKLeadCednCtryDesc,								***/
+
+/***	CASE
+		WHEN	((PolicyDetails.FKTypeOfContract IN ('PL', 'NPL'))	 					AND
+			 (PolicyDetails.FKIncProdDirRi IN ('IE', 'IW'))						AND
+			 (PolicyDetails.FKLeadCedn IS NOT NULL AND PolicyDetails.FKLeadCedn <> '')		AND
+			 (PolicyDetails.UnderwritingYr >= 103))			THEN 'Y'
+		ELSE	'N'
+	END	AS	HubIndicator,									***/
+
+/***	#InfAllTrans_ByRiParticipant_Inwards.InceptionDate,							***/
+/***	#InfAllTrans_ByRiParticipant_Inwards.ExpiryDate,							***/
+	#InfAllTrans_ByRiParticipant_Inwards.UnderwritingYr,
+	#InfAllTrans_ByRiParticipant_Inwards.LeadYn,
+	#InfAllTrans_ByRiParticipant_Inwards.FKPrimaryLayer,
+	#InfAllTrans_ByRiParticipant_Inwards.CaptiveYn,
+	#InfAllTrans_ByRiParticipant_Inwards.FKProduct,
+	#InfAllTrans_ByRiParticipant_Inwards.FKMainLine,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKMainLine IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKMainLine = '') THEN ''
+		ELSE	MIS_MainLineCodes.MainLineLDesc
+	END	AS	FKMainLineDesc,
+***/
+
+/***	Michael Dunne. 29/10/2004. If the Linked Main Line Group is unpopulated, then use the Main Line instead.	***/
+	CASE
+		WHEN	(MIS_MainLineCodes.LinkedMainLineGroup IS NULL)  OR (MIS_MainLineCodes.LinkedMainLineGroup = '')	THEN	#InfAllTrans_ByRiParticipant_Inwards.FKMainLine
+		ELSE	MIS_MainLineCodes.LinkedMainLineGroup			-- MD. 29/06/04
+	END	AS	LinkedMainLineGroup,
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKTerritoryScope,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKTerritoryScope IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKTerritoryScope = '') THEN ''
+		ELSE	TerritoryScopeNames.AreaCodeLDesc
+	END	AS	FKTerritoryScopeDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKCountryOfSettlement,
+
+	COALESCE(OBUSubLineLevel.PeoplesoftOBUCode, OBUMainLineLevel.PeoplesoftOBUCode, 0)	AS	PeoplesoftOBUCode,		-- Michael Dunne. 22nd August 2005
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKCountryOfSettlement IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKCountryOfSettlement = '') THEN ''
+
+		ELSE	CountryOfSettlementNames.AreaCodeLDesc
+	END	AS	FKCountryOfSettlementDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKTradeOfBusinessa		AS	FKTradeOfBusiness,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKTradeOfBusinessa IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKTradeOfBusinessa = '') THEN ''
+		ELSE	TradeOfBusinessCodes.TradeOfBusinessLDesc
+	END	AS	FKTradeOfBusinessDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.Trade2Code,
+	#InfAllTrans_ByRiParticipant_Inwards.FKSubLine,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKSubLine IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKSubLine = '') THEN ''
+
+		ELSE	SubLineCodes.SubLineLDesc
+	END	AS	FKSubLineDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKLocalReportCode,
+	#InfAllTrans_ByRiParticipant_Inwards.FKCovrg,
+	#InfAllTrans_ByRiParticipant_Inwards.FKCountry,
+	#InfAllTrans_ByRiParticipant_Inwards.FKRiskGrade,
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKRatingBasisCode,
+	#InfAllTrans_ByRiParticipant_Inwards.FKCovrgTypeCode,
+	SUBSTRING (#InfAllTrans_ByRiParticipant_Inwards.FKCovrgTypeCode,2,3)	AS	FKCovrgTypeCodeLink,
+	#InfAllTrans_ByRiParticipant_Inwards.Covrg1Value,
+	#InfAllTrans_ByRiParticipant_Inwards.Covrg2Value,
+	#InfAllTrans_ByRiParticipant_Inwards.DateTransEntered,
+
+	#InfAllTrans_ByRiParticipant_Inwards.TransDateToBeProcessed,
+	#InfAllTrans_ByRiParticipant_Inwards.AcctFromDate,
+	#InfAllTrans_ByRiParticipant_Inwards.AcctToDate,
+	#InfAllTrans_ByRiParticipant_Inwards.PeriodTransToBeReported,
+
+/***	Michael Dunne. 14th February 2005. Add new datetime field which takes the Reporting Period and converts it into a 1st of the month real datetime.	***/
+/***					     This is needed for Bermuda/Ireland Cube Drillthrough.								***/
+
+	SUBSTRING(CAST(((#InfAllTrans_ByRiParticipant_Inwards.PeriodTransToBeReported * 100) + 1) AS CHAR),1,4) 	+ '-' + 
+	SUBSTRING(CAST(((#InfAllTrans_ByRiParticipant_Inwards.PeriodTransToBeReported * 100) + 1) AS CHAR),5,2) 	+ '-' + 
+	SUBSTRING(CAST(((#InfAllTrans_ByRiParticipant_Inwards.PeriodTransToBeReported * 100) + 1) AS CHAR),7,2)			AS	PeriodTransToBeReportedDate,
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKInwardsOrOutwardsAcct		AS	FKGeniusLedgerAcct,
+
+/***	Michael Dunne. 13th April 2005. XLCAP 74104.
+	- Add new Installment Number field.			***/
+	#InfAllTrans_ByRiParticipant_Inwards.InstallmentNbr,
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKTransCode,
+	#InfAllTrans_ByRiParticipant_Inwards.FKEndorsementType			AS	FKEndorsementCode,		-- Michael Dunne. 17th September 2004
+	#InfAllTrans_ByRiParticipant_Inwards.TransColumnNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.FKRevenueCode,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKRevenueCode IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKRevenueCode = '') THEN ''
+		ELSE 	RevenueCodes.RevenueCodeLDesc
+	END	AS	FKRevenueCodeDesc,
+***/
+
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKRevenueCode IS NULL)	THEN ''
+		ELSE	RevenueCodes.PSoftMappedRevCode	
+	END	AS	PSoftCode,
+
+	#InfAllTrans_ByRiParticipant_Inwards.Out_FKGenIntStatsPostingKey,	
+	#InfAllTrans_ByRiParticipant_Inwards.Out_R_TR_AMT_PAR		AS	Out_FKParticipant,
+	#InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_PAR		AS	FKParticipant,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_PAR IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_PAR = '') THEN ''
+		ELSE	ParticipantNames.FullName
+	END	AS	FKParticipantDesc,
+***/
+
+	/***	Michael Dunne. 2nd March 2005. So as to link Inwards to Outwards transactions on Commission we need to have a common Revenue Code	***/
+	/***					 - Chose "BRK".												***/
+	/***	As the ParticipantShare is not populated for some records this would not be unique if we group and hence we need to SUM the participant	***/
+	/***	share, and this is valid since the duplicate share is zero percent.										***/
+
+/***	#InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_SPC			AS	ParticipantShare,		***/
+	SUM(#InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_SPC)		AS	ParticipantShare,
+
+	#InfAllTrans_ByRiParticipant_Inwards.PFKRiPolNbr				AS	LinkedRiPolicyNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenRiIntPolNbr			AS	LinkedRiIntPolicyNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenRiIntPolSeq			AS	LinkedRiIntPolicySeq,
+
+
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKNameCode				AS	RIParticipantCode,
+	#InfAllTrans_ByRiParticipant_Inwards.FKOrigCcyCode,
+	SUM(#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy)		AS	OrigCcyAmt,
+
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	OrigPremAmt,
+
+
+	/***	Michael Dunne.	4th February 2005.	Add Annualised Values which were previously on Inwards Policy Details	***/
+	/***						These have been requested as part of the Bermuda / Ireland project	***/
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') AND (PolicyDetails.InceptionDate IS NULL)	-- Cater for missing policies to avoid divide by zero.
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') AND (DATEADD(MONTH, 18, PolicyDetails.InceptionDate) >= PolicyDetails.ExpiryDate) 
+
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') AND (PolicyDetails.InceptionDate = PolicyDetails.ExpiryDate) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 	
+			THEN	(CONVERT (FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, DATEADD (MONTH, 12, PolicyDetails.InceptionDate))) / CONVERT ( FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, PolicyDetails.ExpiryDate))) * #InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)
+	AS	OrigPremAmt_Annualised,
+
+
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/	
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 					***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+		ELSE	0
+
+	END
+	)	AS	OrigCommAmt,
+
+	/***	Michael Dunne.	4th February 2005.	Add Annualised Values which were previously on Inwards Policy Details	***/
+	/***						These have been requested as part of the Bermuda / Ireland project	***/
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/	
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(PolicyDetails.InceptionDate IS NULL)	-- Cater for missing policies to avoid divide by zero.
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(DATEADD(MONTH, 18, PolicyDetails.InceptionDate) >= PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(PolicyDetails.InceptionDate = PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 					***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 
+				THEN	(CONVERT (FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, DATEADD (MONTH, 12, PolicyDetails.InceptionDate))) / CONVERT ( FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, PolicyDetails.ExpiryDate))) * #InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)
+	AS	OrigCommAmt_Annualised,
+
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'SFE') 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	OrigSFEAmt,
+
+
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/	
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode NOT IN ('PRM', 'COM', 'SFE')) 		***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode NOT IN ('PRM', 'COM', 'SFE', 'CPP', 'CPR', 'FRF')) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.OrigCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	OrigOtherAmt,
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKAcctingCcyCode,
+	SUM(#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy)	AS	AcctingCcyAmt,
+
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	AcctingPremAmt,
+
+	/***	Michael Dunne.	4th February 2005.	Add Annualised Values which were previously on Inwards Policy Details	***/
+	/***						These have been requested as part of the Bermuda / Ireland project	***/
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') AND (PolicyDetails.InceptionDate IS NULL)	-- Cater for missing policies to avoid divide by zero.
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') AND (DATEADD(MONTH, 18, PolicyDetails.InceptionDate) >= PolicyDetails.ExpiryDate) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') AND (PolicyDetails.InceptionDate = PolicyDetails.ExpiryDate) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 	
+			THEN	(CONVERT (FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, DATEADD (MONTH, 12, PolicyDetails.InceptionDate))) / CONVERT ( FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, PolicyDetails.ExpiryDate))) * #InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)
+	AS	AcctingPremAmt_Annualised,
+
+
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/		
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 					***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	AcctingCommAmt,
+
+	/***	Michael Dunne.	4th February 2005.	Add Annualised Values which were previously on Inwards Policy Details	***/
+	/***						These have been requested as part of the Bermuda / Ireland project	***/
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/	
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(PolicyDetails.InceptionDate IS NULL)	-- Cater for missing policies to avoid divide by zero.
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(DATEADD(MONTH, 18, PolicyDetails.InceptionDate) >= PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(PolicyDetails.InceptionDate = PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 					***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF'))
+				THEN	(CONVERT (FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, DATEADD (MONTH, 12, PolicyDetails.InceptionDate))) / CONVERT ( FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, PolicyDetails.ExpiryDate))) * #InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)
+	AS	AcctingCommAmt_Annualised,
+
+
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'SFE') 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	AcctingSFEAmt,
+
+
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/	
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode NOT IN ('PRM', 'COM', 'SFE')) 		***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode NOT IN ('PRM', 'COM', 'SFE', 'CPP', 'CPR', 'FRF')) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.AcctingCcyAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	AcctingOtherAmt,
+
+	BaseCcyCompany.FKCcyCode								AS	FKBaseCcyCode,
+	SUM(#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy)		AS	BaseCcyAmtRoeDateBooked,
+
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+
+		ELSE	0
+	END
+
+	)	AS	BasePremAmt,
+
+	/***	Michael Dunne.	4th February 2005.	Add Annualised Values which were previously on Inwards Policy Details	***/
+	/***						These have been requested as part of the Bermuda / Ireland project	***/
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') AND (PolicyDetails.InceptionDate IS NULL)	-- Cater for missing policies to avoid divide by zero.
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') AND (DATEADD(MONTH, 18, PolicyDetails.InceptionDate) >= PolicyDetails.ExpiryDate) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') AND (PolicyDetails.InceptionDate = PolicyDetails.ExpiryDate) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 	
+			THEN	(CONVERT (FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, DATEADD (MONTH, 12, PolicyDetails.InceptionDate))) / CONVERT ( FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, PolicyDetails.ExpiryDate))) * #InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+		ELSE	0
+	END
+	)
+	AS	BasePremAmt_Annualised,
+
+
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/		
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 					***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+		ELSE	0
+	END
+	)	AS	BaseCommAmt,
+
+	/***	Michael Dunne.	4th February 2005.	Add Annualised Values which were previously on Inwards Policy Details	***/
+	/***						These have been requested as part of the Bermuda / Ireland project	***/
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/	
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(PolicyDetails.InceptionDate IS NULL)	-- Cater for missing policies to avoid divide by zero.
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(DATEADD(MONTH, 18, PolicyDetails.InceptionDate) >= PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(PolicyDetails.InceptionDate = PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 					***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF'))
+				THEN	(CONVERT (FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, DATEADD (MONTH, 12, PolicyDetails.InceptionDate))) / CONVERT ( FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, PolicyDetails.ExpiryDate))) * #InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+		ELSE	0
+	END
+	)
+	AS	BaseCommAmt_Annualised,
+
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'SFE') 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+		ELSE	0
+	END
+	)	AS	BaseSFEAmt,
+
+
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/	
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode NOT IN ('PRM', 'COM', 'SFE')) 		***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode NOT IN ('PRM', 'COM', 'SFE', 'CPP', 'CPR', 'FRF')) 
+
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.BaseCcyAmtRoeDateBookedPerRiPolicy
+		ELSE	0
+	END
+	)	AS	BaseOtherAmt,
+
+	SUM(#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy)		AS	CorpCcyAmt,		-- Michael Dunne. 17th September 2004.
+
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	CorpPremAmt,
+
+	/***	Michael Dunne.	4th February 2005.	Add Annualised Values which were previously on Inwards Policy Details	***/
+	/***						These have been requested as part of the Bermuda / Ireland project	***/
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 		AND 
+			(PolicyDetails.InceptionDate IS NULL)	-- Cater for missing policies to avoid divide by zero.
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 		AND 
+			(DATEADD(MONTH, 18, PolicyDetails.InceptionDate) >= PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 		AND 
+			(PolicyDetails.InceptionDate = PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'PRM') 	
+				THEN	(CONVERT (FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, DATEADD (MONTH, 12, PolicyDetails.InceptionDate))) / CONVERT ( FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, PolicyDetails.ExpiryDate))) * #InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+		ELSE	0
+	END
+	)
+	AS	CorpPremAmt_Annualised,
+
+
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/		
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 					***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	CorpCommAmt,
+
+
+	/***	Michael Dunne.	4th February 2005.	Add Annualised Values which were previously on Inwards Policy Details	***/
+	/***						These have been requested as part of the Bermuda / Ireland project	***/
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/	
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(PolicyDetails.InceptionDate IS NULL)	-- Cater for missing policies to avoid divide by zero.
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM')	 	AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(DATEADD(MONTH, 18, PolicyDetails.InceptionDate) >= PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 		AND 			***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 	AND 
+			(PolicyDetails.InceptionDate = PolicyDetails.ExpiryDate) 
+				THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode = 'COM') 					***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode IN ('COM', 'CPP', 'CPR', 'FRF')) 
+				THEN	(CONVERT (FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, DATEADD (MONTH, 12, PolicyDetails.InceptionDate))) / CONVERT ( FLOAT, DATEDIFF (DAY, PolicyDetails.InceptionDate, PolicyDetails.ExpiryDate))) * #InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+		ELSE	0
+	END
+	)
+	AS	CorpCommAmt_Annualised,
+
+	SUM
+	(
+	CASE
+		WHEN	(RevenueCodes.PSoftMappedRevCode = 'SFE') 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	CorpSFEAmt,
+
+
+	/***	Michael Dunne.	14th April 2005. XLCAP 74104 	***/
+	/***	- Amend so that PeopleSoft Codes CPP, CPR and FRF are considered as Commission.	***/	
+	SUM
+	(
+	CASE
+/***		WHEN	(RevenueCodes.PSoftMappedRevCode NOT IN ('PRM', 'COM', 'SFE')) 		***/
+		WHEN	(RevenueCodes.PSoftMappedRevCode NOT IN ('PRM', 'COM', 'SFE', 'CPP', 'CPR', 'FRF')) 
+			THEN	#InfAllTrans_ByRiParticipant_Inwards.CorpAmtPerRiPolicy
+		ELSE	0
+	END
+	)	AS	CorpOtherAmt,
+
+
+/***	Michael Dunne.	8th November 2004.	Add General Ledger fields to avoid the need to do this repeatedly in Query	***/
+	CASE
+		WHEN	(#Inf_BrokerBalance.FKStats IS NULL) 		THEN	#InfAllTrans_ByRiParticipant_Inwards.DateTransEntered
+		ELSE	#Inf_BrokerBalance.SettlementDate
+
+	END	AS	SettlementDate,
+
+	CASE
+		WHEN	(#Inf_BrokerBalance.UnallocPcnt IS NULL)		THEN	0
+		ELSE	#Inf_BrokerBalance.UnallocPcnt
+	END	AS	UnallocPcnt,
+
+	CASE
+		WHEN	(#Inf_BrokerBalance.AllocFlag IS NULL)		THEN	 '2'		-- Fully Allocated.
+		ELSE	#Inf_BrokerBalance.AllocFlag
+	END	AS	AllocFlag,
+
+	CASE
+		WHEN	(#Inf_BrokerBalance.FKStats IS NULL) 		THEN	#InfAllTrans_ByRiParticipant_Inwards.DateTransEntered
+		ELSE	#Inf_BrokerBalance.LastAllocationDate
+	END	AS	LastAllocationDate
+
+
+FROM	#InfAllTrans_ByRiParticipant_Inwards
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration
+LEFT JOIN CompanyNames ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKCompany = CompanyNames.CompanyCode
+
+LEFT JOIN BranchNames ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKBranch = BranchNames.BranchCode
+
+LEFT JOIN Names AS GeniusUserIdNames ON
+			#InfAllTrans_ByRiParticipant_Inwards.FKGenUserId = GeniusUserIdNames.NameCode
+
+LEFT JOIN SectionTypes ON
+		#InfAllTrans_ByRiParticipant_Inwards.PFKPolSecCode = SectionTypes.PKSecType
+
+LEFT JOIN SubSectionTypes ON
+		#InfAllTrans_ByRiParticipant_Inwards.PFKPolSubSecCode = SubSectionTypes.PKPolSubSecType
+
+
+LEFT JOIN ProducingOffices ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKProducingOffice = ProducingOffices.PKProducingOffice
+***/
+
+
+/***	Michael Dunne. 11th May 2004. 	Remove Join as Transactional values only required			***/
+/***	Michael Dunne. 4th February 2005. 	Add join back in as we now require Inception/Expiry dates		***/
+/***						in order to calculate annualised premium & commission values.	***/
+
+LEFT JOIN PolicyDetails ON
+		PolicyDetails.FKGenIntPolNum =  #InfAllTrans_ByRiParticipant_Inwards.FKGenIntPolNbr	AND
+		PolicyDetails.FKGenIntPolSeq = 	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntPolSeq
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration
+LEFT JOIN ContractTypes ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKTypeOfContract = ContractTypes.PKContractType
+
+LEFT JOIN IncProdDirRiCodes ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRi = IncProdDirRiCodes.PKIncProdDirRi
+
+LEFT JOIN Names AS OrigInsuredNames ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKOrigInsured = OrigInsuredNames.NameCode
+
+LEFT JOIN Names AS BrokerOrAgentNames ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKBrokerOrAgent = BrokerOrAgentNames.NameCode
+***/
+
+/***	Michael Dunne. 11th May 2004. Remove Join as Transactional values only required			***/
+/***
+LEFT JOIN Names AS LeadCednNames ON
+		PolicyDetails.FKLeadCedn = LeadCednNames.NameCode					***/
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration
+LEFT JOIN Names AS ParticipantNames ON
+		#InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_PAR = ParticipantNames.NameCode
+***/
+
+
+/***	Michael Dunne. 11th May 2004. Remove Join as Transactional values only required			***/
+/***
+LEFT JOIN #LeadCedentCtry ON
+		PolicyDetails.FKGenIntPolNum = #LeadCedentCtry.FKGenIntPolNum 	AND
+		PolicyDetails.FKGenIntPolSeq = #LeadCedentCtry.FKGenIntPolSeq  			***/
+
+/***	Michael Dunne. 11th May 2004. Remove Join as Transactional values only required			***/
+/***
+LEFT JOIN #LeadCedentCtryDesc ON
+		PolicyDetails.FKGenIntPolNum = #LeadCedentCtryDesc.FKGenIntPolNum 	AND
+		PolicyDetails.FKGenIntPolSeq = #LeadCedentCtryDesc.FKGenIntPolSeq  			***/
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration
+LEFT JOIN AreaCodes AS TerritoryScopeNames ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKTerritoryScope = TerritoryScopeNames.PKAreaCode	
+
+
+LEFT JOIN TradeOfBusinessCodes ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKTradeOfBusinessa = TradeOfBusinessCodes.PKTradeOfBusiness
+
+LEFT JOIN AreaCodes AS CountryOfSettlementNames ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKCountryOfSettlement = CountryOfSettlementNames.PKAreaCode	
+
+LEFT JOIN SubLineCodes ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKSubLine = SubLineCodes.PKSubLine
+
+***/
+
+LEFT JOIN MIS_MainLineCodes ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKMainLine = MIS_MainLineCodes.PKMainLine
+
+LEFT JOIN RevenueCodes ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKRevenueCode = RevenueCodes.PKRevenueCode 
+
+LEFT JOIN BaseCcyCompany ON
+		#InfAllTrans_ByRiParticipant_Inwards.FKCompany = BaseCcyCompany.PKCompany
+
+/***	Michael Dunne.	8th November 2004.	***/
+LEFT JOIN #Inf_BrokerBalance ON
+		#Inf_BrokerBalance.FKStats = #InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsHeader			AND
+		#Inf_BrokerBalance.FKStatsPosting = #InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsPostingKey
+
+
+/***	Michael Dunne. 14th April 2005		***/
+/***	- In order to derive the Direct/Assumed Flag we need the Internal Flag from Accounts Header		***/
+LEFT JOIN AccountsHeader ON
+		AccountsHeader.PKAcctCode = #Inf_BrokerBalance.FKAcctCode
+
+
+/***	Michael Dunne. 22nd August 2005.	***/
+/***	- Add link to XRefIDWBusUnit Table at both MainLine and MainLine/SubLine level so we can then obtain the
+	  PeopleSoft OBU Code from the correct (lowest) level first.								***/
+LEFT JOIN 
+	(
+	SELECT 	
+		FKMainLine, FKSubLine, PeoplesoftOBUCode
+	FROM	
+		PeoplesoftBusinessUnits
+	WHERE	
+		FKSubLine IS NOT NULL AND FKSubLine <> ''
+	) AS OBUSubLineLevel ON
+		OBUSubLineLevel.FKMainLine =  #InfAllTrans_ByRiParticipant_Inwards.FKMainLine	AND
+		OBUSubLineLevel.FKSubLine = #InfAllTrans_ByRiParticipant_Inwards.FKSubLine
+
+LEFT JOIN 
+	(
+	SELECT 	
+		FKMainLine, PeoplesoftOBUCode
+	FROM	
+		PeoplesoftBusinessUnits
+	WHERE	
+
+		FKSubLine IS NULL OR FKSubLine = ''
+	) AS OBUMainLineLevel ON
+		OBUMainLineLevel.FKMainLine =  #InfAllTrans_ByRiParticipant_Inwards.FKMainLine
+
+
+/***	Gross (Inwards) records which are not Reserves and not Claim Payments 	***/
+/***	- No WHERE Clause is required however as this has been done when 	***/
+/***	- table #InfAllTrans_ByRiParticipant_Inwards was built above.			***/
+
+
+GROUP BY
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsHeader,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsSec,
+        #InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsAmt,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntStatsPostingKey,
+	#InfAllTrans_ByRiParticipant_Inwards.FirstInstallmentStatsHeader,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenUserId,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration		
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKGenUserId = '' OR #InfAllTrans_ByRiParticipant_Inwards.FKGenUserId IS NULL) THEN ''
+		WHEN	GeniusUserIdNames.FullName IS NULL 	THEN	'Unknown'
+		ELSE	GeniusUserIdNames.FullName
+	END	AS	FKGenUserIdName,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKCompany,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKCompany IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKCompany = '') THEN ''
+		ELSE	CompanyNames.CompanyName
+	END	AS	FKCompanyName,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKBranch,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKBranch IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKBranch = '') THEN  ''
+		ELSE	BranchNames.BranchName
+	END	AS	FKBranchName,	
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntPolNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntPolSeq,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntSec,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenIntSecDetail,
+	#InfAllTrans_ByRiParticipant_Inwards.CovrgSeq,
+	#InfAllTrans_ByRiParticipant_Inwards.PFKPolNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.PFKPolSecCode,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.PFKPolSecCode IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.PFKPolSecCode = '') THEN ''
+		ELSE	SectionTypes.SecTypeLDesc
+	END	AS	FKPolSecCodeDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.PFKPolSubSecCode,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.PFKPolSubSecCode IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.PFKPolSubSecCode = '') THEN ''
+		ELSE	SubSectionTypes.SubSecTypeDescription
+	END	AS	FKPolSubSecCodeDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKProducingOffice,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKProducingOffice IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKProducingOffice = '') THEN ''
+		WHEN	ProducingOffices.ProducingOfficeLDesc IS NULL 		THEN	'Unknown'
+		ELSE	ProducingOffices.ProducingOfficeLDesc
+	END	AS	FKProducingOfficeDesc,
+***/
+
+/***	Michael Dunne. 11th May 2004. Remove field as from PolicyDetails rather than Transactional		***/
+/***	PolicyDetails.ImcAgreementNbr 		AS FKProgramNbr,					***/
+	#InfAllTrans_ByRiParticipant_Inwards.FKTypeOfContract,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration		
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKTypeOfContract IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKTypeOfContract = '') THEN ''
+		ELSE	ContractTypes.ContractTypeLDesc
+	END	AS	FKTypeOfContractDesc,
+***/
+
+/***	Michael Dunne. 11th May 2004. Remove field as from PolicyDetails rather than Transactional		***/
+/***	PolicyDetails.NewOldEconomyFlag,								***/
+	
+	#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRi,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRi IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRi = '') THEN ''
+		ELSE	IncProdDirRiCodes.IncProdDirRiLDesc
+	END	AS	FKIncProdDirRiDesc,
+***/
+	
+/***	Michael Dunne. 15th April 2005. The logic for deriving Direct/Assumed in Peoplesoft has changed and hence we need to match this here.	***/
+/***
+	CASE
+		WHEN (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('IW','PW')) 			THEN 'I' --'Internal'
+		WHEN (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('PRT','IE','PE'))		THEN 'A' --'Assumed'
+		WHEN (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('ID','PD','XX'))		THEN 'D' --'Direct'
+		ELSE 'D' --'Direct' --Catch all should not be needed
+	END,
+***/
+--WI 6038 changes to include new FKIncProdDirRI values
+	CASE
+		WHEN	(AccountsHeader.FKAnalysisCode1 = 'I')						THEN 'I'	--'Internal'
+		WHEN	 (#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('IW', 'PW','IWT','PWT')) 		THEN 'I' 	--'Internal'
+		WHEN 	(#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('IE', 'PE','IET','PET'))			THEN 'A' 	--'Assumed'
+		WHEN 	(#InfAllTrans_ByRiParticipant_Inwards.FKIncProdDirRI IN ('ID', 'PD', 'XX', 'PRT','IDT','PDT'))	THEN 'D'	--'Direct'
+		ELSE	 'D' 												--'Direct' --Catch all should not be needed
+	END,
+
+	/**********************************************************************************/
+	/***	End of changes for deriving Direct/Assumed Flag.		***/
+	/**********************************************************************************/
+
+/***	Michael Dunne. 11th May 2004. Remove field as from PolicyDetails rather than Transactional		***/
+/***	PolicyDetails.PolTitle,										***/
+	#InfAllTrans_ByRiParticipant_Inwards.FKOrigInsured,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN (#InfAllTrans_ByRiParticipant_Inwards.FKOrigInsured IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKOrigInsured = '') THEN  ''
+		ELSE	OrigInsuredNames.FullName
+	END	AS 	FKOrigInsuredName,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKBrokerOrAgent,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKBrokerOrAgent IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKBrokerOrAgent = '') THEN ''
+		ELSE	BrokerOrAgentNames.FullName
+	END	AS	FKBrokerOrAgentName,	
+***/
+
+/***	Michael Dunne. 11th May 2004. Remove fields as from PolicyDetails rather than Transactional	***/	
+/***	PolicyDetails.FKLeadCedn		AS	FKLeadCedn,					***/
+
+
+
+
+/***	CASE
+		WHEN	(PolicyDetails.FKLeadCedn IS NULL OR PolicyDetails.FKLeadCedn = '') THEN ''
+		ELSE	LeadCednNames.FullName
+	END	AS	FKLeadCednName,								***/
+
+/***	#LeadCedentCtry.SecondAreaCode		AS FKLeadCednCtryCode,			***/
+
+/***	CASE
+		WHEN	(#LeadCedentCtry.SecondAreaCode IS NULL) OR (#LeadCedentCtry.SecondAreaCode = '') THEN ''
+		ELSE	#LeadCedentCtryDesc.AreaCodeLDesc
+	END	AS	FKLeadCednCtryDesc,								***/
+
+/***	CASE
+		WHEN	((PolicyDetails.FKTypeOfContract IN ('PL', 'NPL'))	 					AND
+			 (PolicyDetails.FKIncProdDirRi IN ('IE', 'IW'))						AND
+			 (PolicyDetails.FKLeadCedn IS NOT NULL AND PolicyDetails.FKLeadCedn <> '')		AND
+			 (PolicyDetails.UnderwritingYr >= 103))			THEN 'Y'
+		ELSE	'N'
+	END	AS	HubIndicator,									***/
+
+/***	#InfAllTrans_ByRiParticipant_Inwards.InceptionDate,							***/
+/***	#InfAllTrans_ByRiParticipant_Inwards.ExpiryDate,							***/
+	#InfAllTrans_ByRiParticipant_Inwards.UnderwritingYr,
+	#InfAllTrans_ByRiParticipant_Inwards.LeadYn,
+	#InfAllTrans_ByRiParticipant_Inwards.FKPrimaryLayer,
+	#InfAllTrans_ByRiParticipant_Inwards.CaptiveYn,
+	#InfAllTrans_ByRiParticipant_Inwards.FKProduct,
+	#InfAllTrans_ByRiParticipant_Inwards.FKMainLine,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKMainLine IS NULL) OR (#InfAllTrans_ByRiParticipant_Inwards.FKMainLine = '') THEN ''
+		ELSE	MIS_MainLineCodes.MainLineLDesc
+	END	AS	FKMainLineDesc,
+***/
+
+/***	Michael Dunne. 29/10/2004. If the Linked Main Line Group is unpopulated, then use the Main Line instead.	***/
+	CASE
+
+		WHEN	(MIS_MainLineCodes.LinkedMainLineGroup IS NULL)  OR (MIS_MainLineCodes.LinkedMainLineGroup = '')	THEN	#InfAllTrans_ByRiParticipant_Inwards.FKMainLine
+		ELSE	MIS_MainLineCodes.LinkedMainLineGroup			-- MD. 29/06/04
+	END,
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKTerritoryScope,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKTerritoryScope IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKTerritoryScope = '') THEN ''
+		ELSE	TerritoryScopeNames.AreaCodeLDesc
+	END	AS	FKTerritoryScopeDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKCountryOfSettlement,
+
+	COALESCE(OBUSubLineLevel.PeoplesoftOBUCode, OBUMainLineLevel.PeoplesoftOBUCode, 0),		-- Michael Dunne. 22nd August 2005
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKCountryOfSettlement IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKCountryOfSettlement = '') THEN ''
+		ELSE	CountryOfSettlementNames.AreaCodeLDesc
+	END	AS	FKCountryOfSettlementDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKTradeOfBusinessa,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKTradeOfBusinessa IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKTradeOfBusinessa = '') THEN ''
+		ELSE	TradeOfBusinessCodes.TradeOfBusinessLDesc
+	END	AS	FKTradeOfBusinessDesc,
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.Trade2Code,
+	#InfAllTrans_ByRiParticipant_Inwards.FKSubLine,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKSubLine IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKSubLine = '') THEN ''
+
+		ELSE	SubLineCodes.SubLineLDesc
+
+	END	AS	FKSubLineDesc,
+
+
+***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKLocalReportCode,
+	#InfAllTrans_ByRiParticipant_Inwards.FKCovrg,
+	#InfAllTrans_ByRiParticipant_Inwards.FKCountry,
+	#InfAllTrans_ByRiParticipant_Inwards.FKRiskGrade,
+	#InfAllTrans_ByRiParticipant_Inwards.FKRatingBasisCode,
+	#InfAllTrans_ByRiParticipant_Inwards.FKCovrgTypeCode,
+	SUBSTRING (#InfAllTrans_ByRiParticipant_Inwards.FKCovrgTypeCode,2,3),
+	#InfAllTrans_ByRiParticipant_Inwards.Covrg1Value,
+	#InfAllTrans_ByRiParticipant_Inwards.Covrg2Value,
+	#InfAllTrans_ByRiParticipant_Inwards.DateTransEntered,
+
+	#InfAllTrans_ByRiParticipant_Inwards.TransDateToBeProcessed,
+	#InfAllTrans_ByRiParticipant_Inwards.AcctFromDate,
+	#InfAllTrans_ByRiParticipant_Inwards.AcctToDate,
+	#InfAllTrans_ByRiParticipant_Inwards.PeriodTransToBeReported,
+
+/***	Michael Dunne. 14th February 2005. Add new datetime field which takes the Reporting Period and converts it into a 1st of the month real datetime.	***/
+/***					     This is needed for Bermuda/Ireland Cube Drillthrough.								***/
+
+	SUBSTRING(CAST(((#InfAllTrans_ByRiParticipant_Inwards.PeriodTransToBeReported * 100) + 1) AS CHAR),1,4) 	+ '-' + 
+	SUBSTRING(CAST(((#InfAllTrans_ByRiParticipant_Inwards.PeriodTransToBeReported * 100) + 1) AS CHAR),5,2) 	+ '-' + 
+	SUBSTRING(CAST(((#InfAllTrans_ByRiParticipant_Inwards.PeriodTransToBeReported * 100) + 1) AS CHAR),7,2),
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKInwardsOrOutwardsAcct,
+
+/***	Michael Dunne. 13th April 2005. XLCAP 74104.
+	- Add new Installment Number field.			***/
+	#InfAllTrans_ByRiParticipant_Inwards.InstallmentNbr,
+
+	#InfAllTrans_ByRiParticipant_Inwards.FKTransCode,
+	#InfAllTrans_ByRiParticipant_Inwards.FKEndorsementType,		-- Michael Dunne. 17th September 2004
+	#InfAllTrans_ByRiParticipant_Inwards.TransColumnNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.FKRevenueCode,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKRevenueCode IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.FKRevenueCode = '') THEN ''
+		ELSE 	RevenueCodes.RevenueCodeLDesc
+	END	AS	FKRevenueCodeDesc,
+***/
+
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.FKRevenueCode IS NULL)	THEN ''
+		ELSE	RevenueCodes.PSoftMappedRevCode	
+	END,
+
+	#InfAllTrans_ByRiParticipant_Inwards.Out_FKGenIntStatsPostingKey,	
+	#InfAllTrans_ByRiParticipant_Inwards.Out_R_TR_AMT_PAR,
+	#InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_PAR,
+
+/*** MD. 20/07/04. Remove Description fields for ODS3 migration	
+	CASE
+		WHEN	(#InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_PAR IS NULL OR #InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_PAR = '') THEN ''
+
+		ELSE	ParticipantNames.FullName
+	END	AS	FKParticipantDesc,
+***/
+
+	/***	Michael Dunne. 2nd March 2005. So as to link Inwards to Outwards transactions on Commission we need to have a common Revenue Code	***/
+	/***					 - Chose "BRK".												***/
+	/***	As the ParticipantShare is not populated for some records this would not be unique if we group and hence we need to SUM the participant	***/
+	/***	share, and this is valid since the duplicate share is zero percent.										***/
+/***	#InfAllTrans_ByRiParticipant_Inwards.R_TR_AMT_SPC,	***/
+
+	#InfAllTrans_ByRiParticipant_Inwards.PFKRiPolNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenRiIntPolNbr,
+	#InfAllTrans_ByRiParticipant_Inwards.FKGenRiIntPolSeq,
+	#InfAllTrans_ByRiParticipant_Inwards.FKNameCode,
+	#InfAllTrans_ByRiParticipant_Inwards.FKOrigCcyCode,
+	#InfAllTrans_ByRiParticipant_Inwards.FKAcctingCcyCode,
+	BaseCcyCompany.FKCcyCode,
+
+/***	Michael Dunne.	8th November 2004.	Add General Ledger fields to avoid the need to do this repeatedly in Query	***/
+	CASE
+		WHEN	(#Inf_BrokerBalance.FKStats IS NULL) 		THEN	#InfAllTrans_ByRiParticipant_Inwards.DateTransEntered
+		ELSE	#Inf_BrokerBalance.SettlementDate
+	END,
+
+	CASE
+		WHEN	(#Inf_BrokerBalance.UnallocPcnt IS NULL)		THEN	0
+		ELSE	#Inf_BrokerBalance.UnallocPcnt
+	END,
+
+
+
+	CASE
+
+		WHEN	(#Inf_BrokerBalance.AllocFlag IS NULL)		THEN	 '2'		-- Fully Allocated.
+		ELSE	#Inf_BrokerBalance.AllocFlag
+	END,
+
+	CASE
+		WHEN	(#Inf_BrokerBalance.FKStats IS NULL) 		THEN	#InfAllTrans_ByRiParticipant_Inwards.DateTransEntered
+		ELSE	#Inf_BrokerBalance.LastAllocationDate
+	END
+
+
+
+/************************************************************************/
+/***	Michael Dunne. 11th March 2005.		***/
+/***							***/
+/***	Some conversions have written multiple records	***/
+/***	for the same transaction. As we now sum the 	***/
+/***	Participant Share this can end up with 100% 	***/
+/***	becoming many multiples of 100%. We need to 	***/
+/***	cap this share at 100%.				***/
+/************************************************************************/
+
+IF NOT EXISTS (SELECT * FROM sysindexes WHERE Name  = 'IX_InformaticaTransPolicyInwards_ParticipantShare')
+ BEGIN
+   CREATE  INDEX [IX_InformaticaTransPolicyInwards_ParticipantShare] ON [dbo].[InformaticaTransPolicyInwards]([ParticipantShare]) ON [PRIMARY]
+ END
+
+
+
+UPDATE 	
+	InformaticaTransPolicyInwards
+
+SET 	InformaticaTransPolicyInwards.ParticipantShare = 100
+
+WHERE
+	InformaticaTransPolicyInwards.ParticipantShare > 100	
+
+/*************************************************************************/
+/***	Delete any Temporary Tables.			****/
+/*************************************************************************/
+DROP TABLE #InfCurrentRoe
+DROP TABLE #InfEarliestRoe
+DROP TABLE #InfRptPeriodDateRoe
+DROP TABLE #InfRi
+DROP TABLE #InfRi_Total_Initial
+DROP TABLE #InfRi_Total
+DROP TABLE #InfRi_Ratio
+DROP TABLE #InfAllTrans_ByRiPol_Inwards
+DROP TABLE #InfActiveRiParticipants
+DROP TABLE #InfAllTrans_ByRiParticipant_Inwards
+DROP TABLE #Inf_BrokerBalance			-- Michael Dunne. 8th November 2004
+DROP TABLE #InfMissingBrokerageStatsKeys		-- Michael Dunne. 16th August 2005
+DROP TABLE #InfMissingBrokerageAllTransRecs		-- Michael Dunne. 16th August 2005
+DROP TABLE #InfAllTransGrossBrokerage			-- Michael Dunne. 16th August 2005
